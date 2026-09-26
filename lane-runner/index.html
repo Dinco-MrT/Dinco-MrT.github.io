@@ -8,7 +8,7 @@
 <meta http-equiv="Expires" content="0">
 <!-- Games use a fixed 600x600 stage (apps are responsive; games are not). -->
 <meta name="viewport" content="width=600, height=600, initial-scale=1.0">
-<meta name="description" content="A three-lane endless runner for Meta Ray-Ban Display: swipe to switch lanes, jump and slide, grab rings.">
+<meta name="description" content="Lane Runner: Vapor Freeway. A vaporwave freeway racer for Meta Ray-Ban Display: pave and close lanes, dodge traffic, ride the trucks, grab power-ups.">
 <!-- Without this the device routes no Neural Band / touchpad input to the page. -->
 <meta name="mrbd-web-app-capable" content="yes">
 <meta name="application-name" content="Lane Runner">
@@ -22,7 +22,7 @@
 </style>
 </head>
 <body>
-<canvas id="c" width="600" height="600" aria-label="Lane Runner"></canvas>
+<canvas id="c" width="600" height="600" aria-label="Lane Runner: Vapor Freeway"></canvas>
 <script>
 'use strict';
 (() => {
@@ -30,44 +30,75 @@
   const ctx = document.getElementById('c').getContext('2d');
 
   // ---------- tuning ----------
-  const START_SPEED = 11, MAX_SPEED = 26, ACCEL = 0.22;   // world units / s
-  const JUMP_V = 5.6, GRAVITY = 14.5, SLAM_V = -11;       // peak ≈ 1.08 units
-  const SLIDE_T = 0.65, LANE_SPEED = 9;                  // s, lanes / s
-  const RESTART_LOCK_MS = 700;
+  const START_SPEED = 12, MAX_SPEED = 28, ACCEL = 0.2;   // world units / s
+  const JUMP_V = 7, GRAVITY = 16, SLAM_V = -14;          // peak ≈ 1.5 units: clears cars, reaches truck roofs
+  const HYDRO_JUMP = 1.3, NITRO_SPEED = 1.6;
+  const STEP = 0.22;                                     // tallest ledge the car drives up without crashing
+  const LANE_SPEED = 8;                                  // lanes / s
+  const MIN_LANES = 3, MAX_LANES = 8;
+  const ARM_T = 0.9;                                     // s a pinch / swipe-down waits for a left / right
+  const FRESH_T = 2.5;                                   // freshly paved lanes stay traffic-free this long
+  const HALF_LEN = 0.6, HALF_W = 0.36;                   // player hitbox
+  const RESTART_LOCK_MS = 800;
 
-  // ---------- pseudo-3D projection ----------
-  const HORIZON = 140, GROUND = 560, CX = 300;
-  const LANE_PX = 150, UNIT_PX = 120, D = 7, FAR = 60;
+  // ---------- pseudo-3D projection; the camera slides sideways with the car ----------
+  const HORIZON = 150, GROUND = 515, CX = 300;
+  const LANE_PX = 130, UNIT_PX = 120, D = 7, FAR = 64, NEAR = -4;
   const scaleAt = (z) => D / (Math.max(z, -D * 0.85) + D);
-  const X = (x, z) => CX + x * LANE_PX * scaleAt(z);
+  const X = (x, z) => CX + (x - S.cam) * LANE_PX * scaleAt(z);
   const Y = (z, h = 0) => { const s = scaleAt(z); return HORIZON + (GROUND - HORIZON) * s - h * UNIT_PX * s; };
   const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+  const approach = (v, t, m) => (Math.abs(t - v) <= m ? t : v + Math.sign(t - v) * m);
+  const rand = (a, b) => a + Math.random() * (b - a);
+  const pick = (a) => a[Math.floor(Math.random() * a.length)];
+  const range = (a, b) => { const r = []; for (let i = a; i <= b; i++) r.push(i); return r; };
+  function shuffle(a) {
+    for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; }
+    return a;
+  }
 
   const C = {
-    edge: '#35e0ff', lane: '#1b8fa6', tie: '#12606f', post: '#2f7dff', sun: '#ff4fd8',
-    low: '#ff8a3d', lowFill: '#3d1a06', high: '#ff4fd8', highFill: '#330a2c',
-    wall: '#ff3355', wallFill: '#2e0710', ring: '#ffd84d',
-    body: '#ffd23f', overalls: '#3478ff', strap: '#9aa3ad', text: '#ffffff', dim: '#a9bcc6', panel: '#15181c',
+    pink: '#ff4fd8', cyan: '#35e0ff', purple: '#9b5cff', yellow: '#ffd23f', orange: '#ff8a3d',
+    mint: '#3dffb5', red: '#ff3355', text: '#ffffff', dim: '#c3b4e6',
+    road: '#0d0418', grid: '#c21fb0', panel: '#140a22', tail: '#ff2a6d',
   };
+  const CAR_COLS = [['#35e0ff', '#061c24'], ['#3dffb5', '#05231a'], ['#ffd23f', '#241e05'], ['#ff8a3d', '#261104'], ['#9b5cff', '#150930']];
+  const TRUCK_COLS = [['#9b5cff', '#12072a'], ['#35e0ff', '#051820'], ['#ff8a3d', '#1f0c03']];
+  const POWERS = {
+    magnet: { label: 'MAGNET', color: C.cyan, dur: 10 },
+    shield: { label: 'SHIELD', color: C.mint, dur: 15 },
+    nitro: { label: 'NITRO', color: C.orange, dur: 5 },
+    hydro: { label: 'HYDRAULICS', color: C.purple, dur: 12 },
+    double: { label: 'SCORE 2X', color: C.yellow, dur: 12 },
+  };
+  const SOLID = new Set(['car', 'truck', 'ramp', 'cones', 'barrier']);
+  const VEHICLE = new Set(['car', 'truck', 'ramp']);
 
   // ---------- state ----------
   const S = {
     mode: 'title', // title | play | paused | over
-    t: 0, dist: 0, speed: START_SPEED, rings: 0, best: loadBest(), newBest: false,
-    lane: 0, px: 0, y: 0, vy: 0, slide: 0, slideQueued: false,
-    objs: [], sinceSpawn: 0, gapNext: 10, overAt: 0, shake: 0, flash: 0, anim: 0,
+    t: 0, dist: 0, score: 0, coins: 0, base: START_SPEED, speed: START_SPEED,
+    L: -1, R: 1, born: {}, eL: -1.5, eR: 1.5,
+    lane: 0, px: 0, y: 0, vy: 0, ground: 0, onObj: null,
+    arm: null, armT: 0, pw: {}, invuln: 0,
+    objs: [], parts: [], sinceRow: 0, gapNext: 14, nextPower: 8, nextBlock: 28,
+    cam: 0, shake: 0, flash: 0, anim: 0, overAt: 0, toast: null, streak: 0, streakT: 0,
+    best: loadBest(), newBest: false,
   };
-  window.__laneRunner = S; // read-only hook for desktop testing
 
-  function loadBest() { try { return Number(localStorage.getItem('laneRunner.best')) || 0; } catch { return 0; } }
-  function saveBest(v) { try { localStorage.setItem('laneRunner.best', String(v)); } catch { /* storage unavailable */ } }
-  const score = () => Math.floor(S.dist) + S.rings * 10;
+  function loadBest() { try { return Number(localStorage.getItem('laneRunner.vaporBest')) || 0; } catch { return 0; } }
+  function saveBest(v) { try { localStorage.setItem('laneRunner.vaporBest', String(v)); } catch { /* storage unavailable */ } }
+  const laneCount = () => S.R - S.L + 1;
+  const laneMult = () => (laneCount() <= 3 ? 3 : laneCount() === 4 ? 2 : 1); // a tight road pays more
+  const mult = () => laneMult() * (S.pw.double > 0 ? 2 : 1);
+  const grounded = () => S.y <= S.ground + 0.001 && S.vy <= 0;
 
   function reset() {
     Object.assign(S, {
-      mode: 'play', t: 0, dist: 0, speed: START_SPEED, rings: 0, newBest: false,
-      lane: 0, px: 0, y: 0, vy: 0, slide: 0, slideQueued: false,
-      objs: [], sinceSpawn: 0, gapNext: 10, shake: 0, flash: 0,
+      mode: 'play', t: 0, dist: 0, score: 0, coins: 0, base: START_SPEED, speed: START_SPEED,
+      L: -1, R: 1, born: {}, lane: 0, px: 0, y: 0, vy: 0, ground: 0, onObj: null,
+      arm: null, armT: 0, pw: {}, invuln: 0, objs: [], parts: [],
+      sinceRow: 0, gapNext: 14, nextPower: 8, nextBlock: 28, toast: null, streak: 0, streakT: 0, newBest: false,
     });
   }
 
@@ -79,9 +110,9 @@
       if (actx.state === 'suspended') actx.resume();
     } catch { actx = null; }
   }
-  function tone(f1, f2, dur, type, vol) {
+  function tone(f1, f2, dur, type, vol, delay = 0) {
     if (!actx || actx.state !== 'running') return;
-    const t0 = actx.currentTime, o = actx.createOscillator(), g = actx.createGain();
+    const t0 = actx.currentTime + delay, o = actx.createOscillator(), g = actx.createGain();
     o.type = type;
     o.frequency.setValueAtTime(f1, t0);
     o.frequency.exponentialRampToValueAtTime(f2, t0 + dur);
@@ -91,17 +122,24 @@
     o.start(t0); o.stop(t0 + dur + 0.02);
   }
   const sfx = {
-    jump: () => tone(300, 720, 0.15, 'square', 0.05),
-    slide: () => tone(520, 170, 0.16, 'sawtooth', 0.04),
+    jump: () => tone(260, 700, 0.16, 'square', 0.05),
     swish: () => tone(900, 600, 0.06, 'triangle', 0.05),
-    ring: () => tone(1250, 1700, 0.08, 'square', 0.035),
-    crash: () => tone(220, 40, 0.5, 'sawtooth', 0.09),
+    arm: () => tone(700, 780, 0.05, 'triangle', 0.04),
+    pave: () => { tone(200, 900, 0.22, 'sawtooth', 0.045); tone(400, 1800, 0.22, 'triangle', 0.03); },
+    close: () => tone(900, 160, 0.22, 'sawtooth', 0.045),
+    deny: () => tone(150, 110, 0.18, 'square', 0.05),
+    coin: () => { const f = 1100 * (1 + Math.min(S.streak, 12) * 0.05); tone(f, f * 1.35, 0.08, 'square', 0.03); },
+    power: () => [523, 659, 784, 1046].forEach((f, i) => tone(f, f * 1.01, 0.1, 'square', 0.035, i * 0.06)),
+    smash: () => tone(320, 60, 0.25, 'sawtooth', 0.07),
+    land: () => tone(160, 90, 0.08, 'triangle', 0.05),
+    crash: () => tone(220, 40, 0.6, 'sawtooth', 0.09),
   };
 
   // ---------- input ----------
   // Neural Band / temple touchpad: thumb swipes arrive as Arrow keys, index pinch as Enter.
   // Match on `key`: device events have an empty `code`. Escape (system Back) is left alone.
   const DIRS = { ArrowLeft: 'left', ArrowRight: 'right', ArrowUp: 'up', ArrowDown: 'down' };
+  const DESK = { q: ['open', -1], e: ['open', 1], z: ['close', -1], c: ['close', 1] }; // desktop testing shortcuts
   window.addEventListener('keydown', (e) => {
     const k = e.key || e.code;
     if (k === 'Enter' || k === ' ') {
@@ -113,318 +151,785 @@
     if (d) {
       e.preventDefault();
       if (!e.repeat) onDir(d);
+      return;
     }
+    const m = DESK[String(k).toLowerCase()];
+    if (m && !e.repeat && S.mode === 'play') (m[0] === 'open' ? openLane : closeLane)(m[1]);
   });
 
   function onSelect() {
     unlockAudio();
     if (S.mode === 'title') reset();
-    else if (S.mode === 'play') jump();
+    else if (S.mode === 'play') { S.arm = 'open'; S.armT = ARM_T; sfx.arm(); }
     else if (S.mode === 'paused') S.mode = 'play';
     else if (S.mode === 'over' && performance.now() - S.overAt > RESTART_LOCK_MS) reset();
   }
 
   function onDir(d) {
     if (S.mode !== 'play') return;
-    if (d === 'left' && S.lane > -1) { S.lane--; sfx.swish(); }
-    else if (d === 'right' && S.lane < 1) { S.lane++; sfx.swish(); }
-    else if (d === 'up') jump();
-    else if (d === 'down') duck();
+    if (d === 'left' || d === 'right') {
+      const side = d === 'left' ? -1 : 1, arm = S.arm;
+      S.arm = null;
+      if (arm === 'open') openLane(side);
+      else if (arm === 'close') closeLane(side);
+      else steer(side);
+    } else if (d === 'up') {
+      S.arm = null; jump();
+    } else if (d === 'down') {
+      if (!grounded()) S.vy = Math.min(S.vy, SLAM_V);
+      S.arm = 'close'; S.armT = ARM_T; sfx.arm();
+    }
+  }
+
+  function steer(side) {
+    const to = S.lane + side;
+    if (to < S.L || to > S.R) { if (!openLane(side)) return; } // driving off the edge paves a new lane
+    else sfx.swish();
+    S.lane = to;
   }
 
   function jump() {
-    if (S.y > 0.001) return;
-    S.slide = 0; S.vy = JUMP_V; sfx.jump();
+    if (!grounded()) return;
+    S.vy = JUMP_V * (S.pw.hydro > 0 ? HYDRO_JUMP : 1); sfx.jump();
   }
 
-  function duck() {
-    if (S.y > 0.001) { S.vy = Math.min(S.vy, SLAM_V); S.slideQueued = true; } // slam down, slide on landing
-    else { S.slide = SLIDE_T; sfx.slide(); }
+  function openLane(side) {
+    if (laneCount() >= MAX_LANES) { sfx.deny(); toast(`MAX ${MAX_LANES} LANES`, C.red); return false; }
+    const l = side < 0 ? --S.L : ++S.R;
+    S.born[l] = S.t;
+    sfx.pave();
+    for (let z = 0; z < 30; z += 3) burst(l, z, 0.05, 2, C.mint, 2, 0.5);
+    return true;
+  }
+
+  function closeLane(side) {
+    if (laneCount() <= MIN_LANES) { sfx.deny(); toast(`MIN ${MIN_LANES} LANES`, C.red); return false; }
+    const l = side < 0 ? S.L++ : S.R--;
+    for (const o of S.objs) if (!o.dead && Math.round(o.lane) === l) poof(o);
+    if (S.lane === l) S.lane -= side; // shoved over; whatever is in the next lane is your problem
+    sfx.close();
+    return true;
   }
 
   // ---------- world ----------
-  function shuffle(a) {
-    for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; }
-    return a;
+  function add(o) { const r = Object.assign({ frac: 0, len: 0.3, w: 0.5, h: 0 }, o); S.objs.push(r); return r; }
+
+  // Height of an object's surface at distance u past its rear (-1 = not under you).
+  function surf(o, u) {
+    if (u < 0 || u > o.len) return -1;
+    if (o.kind === 'truck') return u > o.len - 1.3 ? 0.95 : o.h;
+    if (o.kind === 'ramp') return u < 2.4 ? (o.h * u) / 2.4 : u > o.len - 1.3 ? 0.95 : o.h;
+    return o.h;
   }
-  const pickKind = () => { const r = Math.random(); return r < 0.4 ? 'low' : r < 0.7 ? 'high' : 'wall'; };
+
+  function laneClearAt(l, z0, z1) {
+    return !S.objs.some((o) => !o.dead && SOLID.has(o.kind) && Math.round(o.lane) === l && o.z < z1 && o.z + o.len > z0);
+  }
+
+  function coinLine(lane, z, n, ride = null, h = 0.35) {
+    for (let i = 0; i < n; i++) add({ kind: 'coin', lane, z: z + i * 1.4, h, ride });
+  }
+
+  function addCar(lane, z) {
+    const car = add({ kind: 'car', lane, z, len: 1.8, w: 0.74, h: 0.62, frac: rand(0.35, 0.55), col: pick(CAR_COLS) });
+    if (Math.random() < 0.25) {
+      for (let i = 0; i < 5; i++) { const t = i / 4; add({ kind: 'coin', lane, z: z - 1.6 + t * 5, h: 0.4 + 1.0 * Math.sin(Math.PI * t), ride: car }); }
+    }
+    return car;
+  }
+
+  function addTruck(lane, z, ramp, frac = rand(0.5, 0.58)) {
+    const t = add({ kind: ramp ? 'ramp' : 'truck', lane, z, len: 7, w: 0.88, h: ramp ? 1.0 : 1.2, frac, col: pick(TRUCK_COLS) });
+    if (Math.random() < 0.6) for (let i = 0; i < 5; i++) add({ kind: 'coin', lane, z: z + (ramp ? 2.8 : 0.6) + i * 0.8, h: t.h + 0.35, ride: t });
+    return t;
+  }
 
   function spawnRow() {
-    const z = FAR;
-    const lanes = shuffle([-1, 0, 1]);
-    const p3 = Math.min(0.3, S.t / 150), p2 = Math.min(0.55, 0.2 + S.t / 90);
-    const r = Math.random();
-    const n = r < p3 ? 3 : r < p3 + p2 ? 2 : 1;
-    const kinds = Array.from({ length: n }, pickKind);
-    if (n === 3 && kinds.every((k) => k === 'wall')) kinds[Math.floor(Math.random() * 3)] = Math.random() < 0.5 ? 'low' : 'high';
-    for (let i = 0; i < n; i++) S.objs.push({ kind: kinds[i], lane: lanes[i], z });
+    const all = range(S.L, S.R);
+    const open = shuffle(all.filter((l) => S.t - (S.born[l] ?? -99) >= FRESH_T && laneClearAt(l, FAR - 10, FAR + 20)));
+    if (!open.length) return;
+    const dens = Math.min(0.7, 0.28 + S.t / 220);
+    let n = 0;
+    for (let i = 0; i < open.length; i++) if (Math.random() < dens) n++;
+    if (n === 0 && Math.random() < 0.6) n = 1;
+    n = Math.min(n, all.length - 1, open.length); // always leave a way through
+    for (let i = 0; i < n; i++) {
+      const l = open[i];
+      if (Math.random() < 0.32) {
+        const t = addTruck(l, FAR, Math.random() < 0.45);
+        if (Math.random() < 0.3) addTruck(l, FAR + t.len + 1.2, Math.random() < 0.3, t.frac); // convoy
+      } else addCar(l, FAR);
+    }
+    const rest = open.slice(n);
+    if (rest.length) {
+      const r = Math.random();
+      if (r < 0.4) coinLine(rest[0], FAR + 1, 6);
+      else if (r < 0.55 && S.t > 8) add({ kind: 'cones', lane: rest[0], z: FAR + 2, len: 0.5, w: 0.9, h: 0.4 });
+    }
+  }
 
-    const free = lanes.slice(n);
-    const lowIdx = kinds.indexOf('low');
-    if (free.length && Math.random() < 0.6) {
-      const L = free[Math.floor(Math.random() * free.length)];
-      for (let i = 0; i < 5; i++) S.objs.push({ kind: 'ring', lane: L, z: z + 2 + i * 1.5, h: 0.35 });
-    } else if (lowIdx >= 0 && Math.random() < 0.7) {
-      const L = lanes[lowIdx];
-      for (let i = 0; i < 5; i++) {
-        const t = i / 4;
-        S.objs.push({ kind: 'ring', lane: L, z: z - 2.4 + t * 4.8, h: 0.35 + 0.75 * Math.sin(Math.PI * t) });
+  function spawnPower() {
+    const lanes = shuffle(range(S.L, S.R)).filter((l) => laneClearAt(l, FAR - 4, FAR + 3));
+    if (lanes.length) add({ kind: 'power', power: pick(Object.keys(POWERS)), lane: lanes[0], z: FAR + 1, h: 0.55 });
+  }
+
+  // Road closed across every current lane: pave a new one (or go nitro) to get through.
+  function spawnBlock() {
+    if (S.objs.some((o) => o.kind === 'barrier')) return;
+    for (let l = S.L; l <= S.R; l++) add({ kind: 'barrier', lane: l, z: FAR + 4, len: 0.6, w: 0.96, h: 1.7 });
+    S.sinceRow = -14;
+  }
+
+  function burst(x, z, h, n, color, spd = 3, life = 0.6) {
+    for (let i = 0; i < n; i++) {
+      S.parts.push({ x, z, h, vx: rand(-0.5, 0.5) * spd * 0.4, vz: rand(-0.5, 0.5) * spd, vh: rand(0.2, 1) * spd, life, max: life, color });
+    }
+    if (S.parts.length > 240) S.parts.splice(0, S.parts.length - 240);
+  }
+
+  function poof(o) {
+    o.dead = true;
+    if (o.kind !== 'coin') burst(o.lane, o.z + o.len / 2, (o.h || 0.4) / 2, 8, C.pink, 2, 0.4);
+  }
+
+  function smash(o) {
+    o.dead = true;
+    for (const c of S.objs) if (c.ride === o) c.ride = null;
+    burst(o.lane, Math.max(o.z, 0.5), (o.h || 0.5) / 2, 18, (o.col && o.col[0]) || C.orange, 7, 0.8);
+    S.score += 25 * mult(); S.shake = Math.max(S.shake, 0.15); sfx.smash();
+  }
+
+  function toast(text, color) { S.toast = { text, color, t: 1.4 }; }
+
+  function collectCoin(o) {
+    S.coins++; S.streak++; S.streakT = 0.6;
+    S.score += 10 * mult();
+    burst(o.lane, o.z, o.h, 4, C.yellow, 2, 0.35);
+    sfx.coin();
+  }
+
+  function grantPower(kind, o) {
+    S.pw[kind] = POWERS[kind].dur;
+    toast(POWERS[kind].label, POWERS[kind].color);
+    burst(o.lane, o.z, o.h, 14, POWERS[kind].color, 4, 0.6);
+    sfx.power();
+  }
+
+  function crash(o) {
+    S.mode = 'over'; S.overAt = performance.now(); S.shake = 0.45; S.flash = 0.35; S.arm = null;
+    for (const c of [C.pink, C.cyan, C.yellow]) burst(S.px, 0.3, S.y + 0.3, 14, c, 7, 1);
+    sfx.crash();
+    const sc = Math.floor(S.score);
+    if (sc > S.best) { S.best = sc; S.newBest = true; saveBest(sc); }
+  }
+
+  // Faster traffic queues behind slower traffic instead of driving through it.
+  function convoy() {
+    const v = S.objs.filter((o) => !o.dead && VEHICLE.has(o.kind)).sort((a, b) => a.z - b.z);
+    for (let i = 0; i < v.length; i++) {
+      for (let j = i + 1; j < v.length; j++) {
+        if (v[j].lane !== v[i].lane) continue;
+        if (v[j].z - (v[i].z + v[i].len) < 1.5 && v[i].frac > v[j].frac) v[i].frac = v[j].frac;
+        break;
       }
     }
   }
 
-  function crash() {
-    S.mode = 'over'; S.overAt = performance.now(); S.shake = 0.35; S.flash = 0.3;
-    sfx.crash();
-    const sc = score();
-    if (sc > S.best) { S.best = sc; S.newBest = true; saveBest(sc); }
+  function magnet(dt) {
+    if (!(S.pw.magnet > 0)) return;
+    const k = Math.min(1, dt * 7);
+    for (const o of S.objs) {
+      if (o.dead || o.kind !== 'coin' || o.z > 14 || o.z < -1 || Math.abs(o.lane - S.px) > 3) continue;
+      o.ride = null; o.frac = 0;
+      o.lane += (S.px - o.lane) * k;
+      o.h += (S.y + 0.4 - o.h) * k;
+      o.z -= o.z * Math.min(1, dt * 3);
+    }
   }
 
   function step(h) {
     const dz = S.speed * h;
     S.dist += dz;
+    S.score += dz * mult() * 0.5;
 
-    const diff = S.lane - S.px, maxMove = LANE_SPEED * h;
-    S.px += Math.abs(diff) <= maxMove ? diff : Math.sign(diff) * maxMove;
+    const diff = S.lane - S.px, mv = LANE_SPEED * h;
+    S.px += Math.abs(diff) <= mv ? diff : Math.sign(diff) * mv;
 
-    if (S.y > 0 || S.vy > 0) {
+    for (const o of S.objs) o.z -= (S.speed - (o.ride ? o.ride.frac : o.frac) * S.base) * h;
+
+    S.sinceRow += dz;
+    if (S.sinceRow >= S.gapNext) {
+      S.sinceRow = 0;
+      spawnRow();
+      S.gapNext = Math.max(9, 17 - S.base * 0.25) + rand(0, 4);
+    }
+
+    // Solid things: drive up onto what's low enough, crash into what isn't.
+    let ground = 0, on = null;
+    for (const o of S.objs) {
+      if (o.dead || !SOLID.has(o.kind)) continue;
+      if (Math.abs(S.px - o.lane) >= HALF_W + o.w / 2) continue;
+      const sF = surf(o, HALF_LEN - o.z), sC = surf(o, -o.z), sB = surf(o, -HALF_LEN - o.z);
+      const top = Math.max(sF, sC, sB);
+      if (top < 0) continue;
+      if (Math.max(sF, sC) > S.y + STEP) {
+        if (S.pw.nitro > 0) { smash(o); continue; }
+        if (S.invuln > 0) continue;
+        if (S.pw.shield > 0) { S.pw.shield = 0; S.invuln = 1.2; smash(o); toast('SHIELD SAVED YOU', C.mint); continue; }
+        crash(o); return;
+      }
+      if (top > ground) { ground = top; on = o; }
+    }
+    S.ground = ground; S.onObj = on;
+    if (S.y < ground) { S.y = ground; if (S.vy < 0) S.vy = 0; }
+    if (S.y > ground || S.vy > 0) {
       S.vy -= GRAVITY * h;
       S.y += S.vy * h;
-      if (S.y <= 0) {
-        S.y = 0; S.vy = 0;
-        if (S.slideQueued) { S.slideQueued = false; S.slide = SLIDE_T; sfx.slide(); }
+      if (S.y <= ground) {
+        if (S.vy < -7) { sfx.land(); burst(S.px, -0.4, ground, 6, C.cyan, 2, 0.35); }
+        S.y = ground; S.vy = 0;
       }
     }
-    if (S.slide > 0) S.slide = Math.max(0, S.slide - h);
 
-    S.sinceSpawn += dz;
-    if (S.sinceSpawn >= S.gapNext) {
-      S.sinceSpawn = 0;
-      spawnRow();
-      S.gapNext = Math.max(8.5, 15 - S.speed * 0.25) + Math.random() * 3;
-    }
-
-    const bodyTop = S.y + (S.slide > 0 ? 0.4 : 0.9);
     for (const o of S.objs) {
-      o.z -= dz;
-      if (o.dead || Math.abs(o.z) > 0.45 || Math.abs(S.px - o.lane) > 0.5) continue;
-      if (o.kind === 'ring') {
-        if (o.h + 0.15 >= S.y && o.h - 0.15 <= bodyTop) { o.dead = true; S.rings++; sfx.ring(); }
-        continue;
-      }
-      const hit =
-        o.kind === 'wall' ? true :
-        o.kind === 'low' ? S.y < 0.42 :
-        /* high beam spans h 0.55–0.85 */ !(bodyTop <= 0.55 || S.y >= 0.88);
-      if (hit) { crash(); return; }
+      if (o.dead || (o.kind !== 'coin' && o.kind !== 'power')) continue;
+      if (Math.abs(o.z) > HALF_LEN + 0.25 || Math.abs(S.px - o.lane) > 0.6) continue;
+      if (o.h < S.y - 0.25 || o.h > S.y + 0.95) continue;
+      o.dead = true;
+      if (o.kind === 'coin') collectCoin(o); else grantPower(o.power, o);
     }
-    S.objs = S.objs.filter((o) => o.z > -4 && !o.dead);
+
+    // Traffic can't drive through a closed road; it takes the exit instead.
+    for (const b of S.objs) {
+      if (b.kind !== 'barrier' || b.dead) continue;
+      for (const o of S.objs) {
+        if (!o.dead && o.kind !== 'barrier' && (o.frac > 0 || o.ride) && Math.round(o.lane) === b.lane && o.z < b.z + b.len && o.z + o.len > b.z - 0.6) poof(o);
+      }
+    }
+
+    S.objs = S.objs.filter((o) => !o.dead && o.z + o.len > NEAR - 2);
+  }
+
+  function updateParts(dt) {
+    for (const p of S.parts) {
+      p.life -= dt;
+      p.x += p.vx * dt; p.z += p.vz * dt - (S.mode === 'play' ? S.speed * dt : 0);
+      p.vh -= 9 * dt; p.h = Math.max(0, p.h + p.vh * dt);
+    }
+    S.parts = S.parts.filter((p) => p.life > 0);
   }
 
   function update(dt) {
     S.anim += dt;
     S.shake = Math.max(0, S.shake - dt);
     S.flash = Math.max(0, S.flash - dt);
-    if (S.mode === 'title') { S.dist += 5 * dt; return; }
+    if (S.toast && (S.toast.t -= dt) <= 0) S.toast = null;
+    updateParts(dt);
+
+    const camT = S.mode === 'title' ? Math.sin(S.anim * 0.4) * 0.6 : S.px * 0.75 + ((S.L + S.R) / 2) * 0.25;
+    S.cam += (camT - S.cam) * Math.min(1, dt * 5);
+    S.eL = approach(S.eL, S.L - 0.5, dt * 6);
+    S.eR = approach(S.eR, S.R + 0.5, dt * 6);
+
+    if (S.mode === 'title') { S.dist += 9 * dt; return; }
     if (S.mode !== 'play') return;
     S.t += dt;
-    S.speed = Math.min(MAX_SPEED, START_SPEED + S.t * ACCEL);
-    // Sub-step so fast speeds can't tunnel through an obstacle.
-    const steps = Math.max(1, Math.ceil((S.speed * dt) / 0.35));
+    S.base = Math.min(MAX_SPEED, START_SPEED + S.t * ACCEL);
+    S.speed += (S.base * (S.pw.nitro > 0 ? NITRO_SPEED : 1) - S.speed) * Math.min(1, dt * 3);
+
+    if (S.arm && (S.armT -= dt) <= 0) S.arm = null;
+    S.invuln = Math.max(0, S.invuln - dt);
+    for (const k in S.pw) {
+      if (S.pw[k] > 0 && (S.pw[k] -= dt) <= 0) { S.pw[k] = 0; if (k === 'nitro') S.invuln = Math.max(S.invuln, 1); }
+    }
+    if ((S.streakT -= dt) <= 0) S.streak = 0;
+    if ((S.nextPower -= dt) <= 0) { spawnPower(); S.nextPower = rand(9, 15); }
+    if ((S.nextBlock -= dt) <= 0) { spawnBlock(); S.nextBlock = rand(28, 42); }
+    magnet(dt);
+    convoy();
+
+    // Sub-step so fast speeds can't tunnel through anything.
+    const steps = Math.max(1, Math.ceil((S.speed * dt) / 0.3));
     for (let i = 0; i < steps && S.mode === 'play'; i++) step(dt / steps);
+
+    if (S.mode === 'play' && S.pw.nitro > 0) burst(S.px + rand(-0.25, 0.25), -0.9, S.y + 0.2, 1, pick([C.orange, C.yellow]), 1.5, 0.3);
   }
 
-  // ---------- drawing ----------
+  // ---------- drawing: pre-baked sky ----------
+  const SUN_R = 110;
+  const sunImg = (() => {
+    const c = document.createElement('canvas'); c.width = SUN_R * 2 + 4; c.height = SUN_R + 2;
+    const g = c.getContext('2d');
+    const grd = g.createLinearGradient(0, 0, 0, SUN_R);
+    grd.addColorStop(0, '#ffd23f'); grd.addColorStop(0.55, '#ff7a6b'); grd.addColorStop(1, '#ff2fb3');
+    g.fillStyle = grd; g.beginPath(); g.arc(SUN_R + 2, SUN_R + 1, SUN_R, Math.PI, 0); g.closePath(); g.fill();
+    g.globalCompositeOperation = 'destination-out';
+    for (let i = 0; i < 7; i++) g.fillRect(0, SUN_R * 0.45 + i * (SUN_R * 0.55 / 7), c.width, 1.5 + i * 1.4);
+    return c;
+  })();
+
+  const MT_W = 600, MT_H = 80;
+  const mtImg = (() => {
+    const c = document.createElement('canvas'); c.width = MT_W; c.height = MT_H + 2;
+    const g = c.getContext('2d');
+    const pts = [];
+    for (let x = 0; x <= MT_W; x += 30) pts.push([x, MT_H - (x % 60 === 0 ? rand(35, MT_H - 4) : rand(8, 30))]);
+    pts[pts.length - 1][1] = pts[0][1]; // seamless tile
+    g.beginPath(); g.moveTo(0, MT_H + 2);
+    for (const [x, y] of pts) g.lineTo(x, y);
+    g.lineTo(MT_W, MT_H + 2); g.closePath();
+    g.fillStyle = '#000'; g.fill();
+    g.strokeStyle = C.purple; g.lineWidth = 2; g.lineJoin = 'round'; g.stroke();
+    g.globalAlpha = 0.45; g.lineWidth = 1;
+    for (let i = 1; i < pts.length - 1; i++) {
+      if (pts[i][1] < pts[i - 1][1] && pts[i][1] < pts[i + 1][1]) {
+        g.beginPath(); g.moveTo(pts[i][0], pts[i][1]); g.lineTo(pts[i][0] + rand(-12, 12), MT_H); g.stroke();
+      }
+    }
+    return c;
+  })();
+
+  const STARS = Array.from({ length: 45 }, () => ({ x: rand(0, W), y: rand(8, HORIZON - 40), p: rand(0, 6) }));
+
+  // ---------- drawing helpers ----------
   function line(x1, y1, x2, y2) { ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke(); }
   function rrect(x, y, w, h, r) {
     ctx.beginPath();
     ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
     ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
   }
+  function poly(pts, fill = true) {
+    ctx.beginPath(); ctx.moveTo(pts[0][0], pts[0][1]);
+    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+    ctx.closePath(); if (fill) ctx.fill(); ctx.stroke();
+  }
+  const P = (x, z, h) => [X(x, z), Y(z, h)];
 
-  function drawTrack() {
-    const zn = -3, zf = FAR + 10;
-    // Retro sun on the horizon: strokes only, bright fills glare on an additive display.
-    ctx.strokeStyle = C.sun; ctx.lineWidth = 3; ctx.globalAlpha = 0.55;
-    ctx.beginPath(); ctx.arc(CX, HORIZON, 70, Math.PI, 0); ctx.stroke();
-    for (let i = 1; i <= 3; i++) { const yy = HORIZON - i * 16, dx = Math.sqrt(70 * 70 - (i * 16) ** 2); line(CX - dx, yy, CX + dx, yy); }
-    ctx.globalAlpha = 0.35; line(0, HORIZON, W, HORIZON);
+  // A box seen from behind: the side facing the camera, the roof, then the rear.
+  function box(x, w, z0, z1, h0, h1, stroke, fill, lw) {
+    z0 = Math.max(z0, NEAR);
+    if (z1 <= z0) return;
+    const xl = x - w / 2, xr = x + w / 2;
+    ctx.strokeStyle = stroke; ctx.fillStyle = fill; ctx.lineWidth = lw;
+    if (xr < S.cam) poly([P(xr, z0, h0), P(xr, z1, h0), P(xr, z1, h1), P(xr, z0, h1)]);
+    else if (xl > S.cam) poly([P(xl, z0, h0), P(xl, z1, h0), P(xl, z1, h1), P(xl, z0, h1)]);
+    poly([P(xl, z0, h1), P(xr, z0, h1), P(xr, z1, h1), P(xl, z1, h1)]);
+    poly([P(xl, z0, h0), P(xr, z0, h0), P(xr, z0, h1), P(xl, z0, h1)]);
+  }
 
-    // Faint track surface.
-    ctx.globalAlpha = 1; ctx.fillStyle = '#07161b';
+  // ---------- scenery ----------
+  function drawSky() {
+    for (const s of STARS) {
+      ctx.globalAlpha = 0.35 + 0.35 * Math.sin(S.anim * 2 + s.p);
+      ctx.fillStyle = C.text; ctx.fillRect(s.x, s.y, 2, 2);
+    }
+    ctx.globalAlpha = 0.6;
+    ctx.drawImage(sunImg, CX - S.cam * 6 - SUN_R - 2, HORIZON - SUN_R - 1);
+    ctx.globalAlpha = 1;
+    const ox = -(((S.cam * 14) % MT_W) + MT_W) % MT_W;
+    for (let x = ox - MT_W; x < W; x += MT_W) ctx.drawImage(mtImg, x, HORIZON - MT_H);
+    ctx.strokeStyle = C.pink; ctx.lineWidth = 2; ctx.globalAlpha = 0.8; line(0, HORIZON, W, HORIZON);
+    ctx.globalAlpha = 1;
+  }
+
+  function drawGrid() {
+    const zf = FAR + 8;
+    ctx.strokeStyle = C.grid; ctx.lineWidth = 1.5;
+    ctx.globalAlpha = 0.35;
     ctx.beginPath();
-    ctx.moveTo(X(-1.5, zn), Y(zn)); ctx.lineTo(X(1.5, zn), Y(zn)); ctx.lineTo(X(1.5, zf), Y(zf)); ctx.lineTo(X(-1.5, zf), Y(zf));
+    const c0 = Math.floor(S.cam);
+    for (let i = -16; i <= 16; i++) { const x = c0 + i + 0.5; ctx.moveTo(X(x, NEAR), Y(NEAR)); ctx.lineTo(X(x, zf), Y(zf)); }
+    ctx.stroke();
+    for (let z = -(S.dist % 4); z < zf; z += 4) {
+      if (z < NEAR) continue;
+      ctx.globalAlpha = clamp((zf - z) / FAR, 0.08, 0.5);
+      line(0, Y(z), W, Y(z));
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  function drawRoad() {
+    const zf = FAR + 8;
+    ctx.fillStyle = C.road; ctx.globalAlpha = 0.95;
+    ctx.beginPath();
+    ctx.moveTo(X(S.eL, NEAR), Y(NEAR)); ctx.lineTo(X(S.eR, NEAR), Y(NEAR)); ctx.lineTo(X(S.eR, zf), Y(zf)); ctx.lineTo(X(S.eL, zf), Y(zf));
     ctx.closePath(); ctx.fill();
 
-    // Sleepers scrolling toward you.
-    ctx.strokeStyle = C.tie; ctx.lineWidth = 2;
-    const spacing = 3;
-    for (let z = -(S.dist % spacing); z < zf; z += spacing) {
-      if (z < zn) continue;
-      ctx.globalAlpha = clamp((zf - z) / FAR, 0.1, 1);
-      line(X(-1.5, z), Y(z), X(1.5, z), Y(z));
+    // Freshly paved lanes shimmer while they're traffic-free.
+    for (let l = S.L; l <= S.R; l++) {
+      const age = S.t - (S.born[l] ?? -99);
+      if (age >= FRESH_T || S.mode === 'title') continue;
+      const k = 1 - age / FRESH_T;
+      ctx.globalAlpha = 0.18 * k; ctx.fillStyle = C.mint;
+      ctx.beginPath();
+      ctx.moveTo(X(l - 0.5, NEAR), Y(NEAR)); ctx.lineTo(X(l + 0.5, NEAR), Y(NEAR)); ctx.lineTo(X(l + 0.5, zf), Y(zf)); ctx.lineTo(X(l - 0.5, zf), Y(zf));
+      ctx.closePath(); ctx.fill();
+      const sz = age * 70; // sweep line racing to the horizon
+      if (sz < zf) { ctx.globalAlpha = k; ctx.strokeStyle = C.mint; ctx.lineWidth = 4; line(X(l - 0.5, sz), Y(sz), X(l + 0.5, sz), Y(sz)); }
     }
 
-    // Side pylons.
-    ctx.strokeStyle = C.post;
-    const pSpacing = 6;
-    for (let z = -(S.dist % pSpacing); z < zf; z += pSpacing) {
-      if (z < zn) continue;
-      const s = scaleAt(z);
-      ctx.globalAlpha = clamp((zf - z) / FAR, 0.1, 1);
-      ctx.lineWidth = Math.max(1, 4 * s);
-      for (const side of [-2.2, 2.2]) { line(X(side, z), Y(z), X(side, z), Y(z, 1.6)); line(X(side, z) - 10 * s, Y(z, 1.6), X(side, z) + 10 * s, Y(z, 1.6)); }
+    // Rumble strips.
+    ctx.globalAlpha = 0.7; ctx.fillStyle = C.pink;
+    ctx.beginPath();
+    for (let z = -(S.dist % 3); z < zf; z += 3) {
+      const z0 = Math.max(z, NEAR), z1 = z + 1.5;
+      if (z1 <= NEAR) continue;
+      for (const [a, b] of [[S.eL, S.eL + 0.1], [S.eR - 0.1, S.eR]]) {
+        ctx.moveTo(X(a, z0), Y(z0)); ctx.lineTo(X(b, z0), Y(z0)); ctx.lineTo(X(b, z1), Y(z1)); ctx.lineTo(X(a, z1), Y(z1)); ctx.closePath();
+      }
     }
+    ctx.fill();
 
-    // Rails and lane dividers.
+    // Dashed lane dividers.
+    ctx.globalAlpha = 0.9; ctx.strokeStyle = C.cyan; ctx.lineWidth = 3;
+    ctx.beginPath();
+    for (let l = S.L; l < S.R; l++) {
+      const x = l + 0.5;
+      for (let z = -(S.dist % 5); z < zf; z += 5) {
+        const z0 = Math.max(z, NEAR), z1 = z + 2.2;
+        if (z1 <= NEAR) continue;
+        ctx.moveTo(X(x, z0), Y(z0)); ctx.lineTo(X(x, z1), Y(z1));
+      }
+    }
+    ctx.stroke();
+
+    // Glowing edges.
+    for (const [lw, a] of [[9, 0.25], [3, 1]]) {
+      ctx.globalAlpha = a; ctx.strokeStyle = C.pink; ctx.lineWidth = lw;
+      for (const x of [S.eL, S.eR]) line(X(x, NEAR), Y(NEAR), X(x, zf), Y(zf));
+    }
     ctx.globalAlpha = 1;
-    ctx.strokeStyle = C.edge; ctx.lineWidth = 4;
-    for (const x of [-1.5, 1.5]) line(X(x, zn), Y(zn), X(x, zf), Y(zf));
-    ctx.strokeStyle = C.lane; ctx.lineWidth = 2;
-    for (const x of [-0.5, 0.5]) line(X(x, zn), Y(zn), X(x, zf), Y(zf));
+  }
+
+  function drawPalm(x, z) {
+    const a = clamp((FAR + 6 - z) / 12, 0, 1);
+    if (a <= 0) return;
+    const s = scaleAt(z), bx = X(x, z), by = Y(z), u = UNIT_PX * s;
+    const lean = x < S.cam ? -1 : 1;
+    const tx = bx + lean * 0.35 * u, ty = by - 2.6 * u;
+    ctx.globalAlpha = a;
+    ctx.strokeStyle = C.purple; ctx.lineWidth = Math.max(1.5, 7 * s);
+    ctx.beginPath(); ctx.moveTo(bx, by); ctx.quadraticCurveTo(bx, by - 1.4 * u, tx, ty); ctx.stroke();
+    ctx.strokeStyle = C.mint; ctx.lineWidth = Math.max(1, 4 * s);
+    ctx.beginPath();
+    for (const k of [-1.2, -0.7, -0.25, 0.25, 0.7, 1.2]) {
+      ctx.moveTo(tx, ty);
+      ctx.quadraticCurveTo(tx + k * 0.5 * u, ty - 0.35 * u, tx + k * u, ty + (0.15 + 0.35 * Math.abs(k)) * u);
+    }
+    ctx.stroke();
+  }
+
+  function drawPalms() {
+    const sp = 10;
+    for (let z = FAR + 6 - ((S.dist + FAR + 6) % sp); z > NEAR + 1; z -= sp) {
+      drawPalm(S.eL - 1.3, z); drawPalm(S.eR + 1.3, z);
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  // ---------- things on the road ----------
+  function drawPowerIcon(kind, x, y, r, color) {
+    ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineWidth = Math.max(2, r * 0.18);
+    ctx.beginPath();
+    if (kind === 'magnet') {
+      ctx.arc(x, y, r * 0.45, 0, Math.PI); ctx.moveTo(x - r * 0.45, y); ctx.lineTo(x - r * 0.45, y - r * 0.5);
+      ctx.moveTo(x + r * 0.45, y); ctx.lineTo(x + r * 0.45, y - r * 0.5); ctx.stroke();
+    } else if (kind === 'shield') {
+      poly([[x, y - r * 0.65], [x + r * 0.55, y - r * 0.4], [x + r * 0.45, y + r * 0.25], [x, y + r * 0.65], [x - r * 0.45, y + r * 0.25], [x - r * 0.55, y - r * 0.4]], false);
+    } else if (kind === 'nitro') {
+      poly([[x + r * 0.15, y - r * 0.7], [x - r * 0.4, y + r * 0.1], [x, y + r * 0.1], [x - r * 0.15, y + r * 0.7], [x + r * 0.4, y - r * 0.1], [x, y - r * 0.1]], false);
+    } else if (kind === 'hydro') {
+      for (const dy of [-0.25, 0.25]) { ctx.moveTo(x - r * 0.45, y + (dy + 0.2) * r); ctx.lineTo(x, y + (dy - 0.2) * r); ctx.lineTo(x + r * 0.45, y + (dy + 0.2) * r); }
+      ctx.stroke();
+    } else {
+      ctx.font = `800 ${Math.round(r * 0.9)}px system-ui, Roboto, sans-serif`;
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('2X', x, y + 1);
+    }
+  }
+
+  function drawCar(o) {
+    const [st, fi] = o.col, z0 = o.z, s = scaleAt(Math.max(z0, NEAR)), x = o.lane;
+    const lw = Math.max(1.5, 3 * s);
+    box(x, o.w, z0 + 0.5, z0 + 1.35, 0.42, o.h, st, fi, lw);          // cabin
+    box(x, o.w, z0, z0 + o.len, 0.1, 0.42, st, fi, lw);               // body
+    const yl = Y(Math.max(z0, NEAR), 0.28), th = 0.07 * UNIT_PX * s;
+    ctx.fillStyle = C.tail;
+    ctx.fillRect(X(x - o.w / 2 + 0.05, z0), yl, 0.18 * LANE_PX * s, th);
+    ctx.fillRect(X(x + o.w / 2 - 0.23, z0), yl, 0.18 * LANE_PX * s, th);
+  }
+
+  function drawTruck(o) {
+    const [st, fi] = o.col, z0 = o.z, z1 = o.z + o.len, x = o.lane, s = scaleAt(Math.max(z0, NEAR));
+    const lw = Math.max(1.5, 3 * s);
+    box(x, o.w * 0.92, z1 - 1.2, z1, 0.1, 0.95, C.cyan, '#061820', lw);  // cab (far end)
+    if (o.kind === 'truck') {
+      box(x, o.w, z0, z1 - 1.3, 0.25, o.h, st, fi, lw);
+      if (z0 > NEAR) {
+        // Rear doors and a racing stripe down the visible side.
+        ctx.strokeStyle = st; ctx.lineWidth = Math.max(1, 2 * s);
+        line(X(x, z0), Y(z0, 0.3), X(x, z0), Y(z0, o.h - 0.05));
+        ctx.strokeStyle = C.pink;
+        const sx = x + (x < S.cam ? o.w / 2 : -o.w / 2);
+        if (Math.abs(x - S.cam) > o.w / 2) line(X(sx, z0), Y(z0, o.h * 0.65), X(sx, z1 - 1.3), Y(z1 - 1.3, o.h * 0.65));
+      }
+    } else {
+      // Car carrier: a ramp to drive up and a flat deck to ride.
+      box(x, o.w, z0 + 2.4, z1 - 1.3, 0.75, o.h, st, fi, lw);
+      const r0 = Math.max(z0, NEAR), rh = o.h * (r0 - z0) / 2.4;
+      if (r0 < z0 + 2.4) {
+        ctx.strokeStyle = C.yellow; ctx.fillStyle = '#1d1604'; ctx.lineWidth = lw;
+        poly([P(x - o.w / 2, r0, rh), P(x + o.w / 2, r0, rh), P(x + o.w / 2, z0 + 2.4, o.h), P(x - o.w / 2, z0 + 2.4, o.h)]);
+        ctx.beginPath();
+        for (let k = 0.3; k < 2.4; k += 0.6) {
+          const zz = z0 + k;
+          if (zz < NEAR) continue;
+          const hh = (o.h * k) / 2.4;
+          ctx.moveTo(X(x - o.w * 0.3, zz), Y(zz, hh)); ctx.lineTo(X(x, zz + 0.25), Y(zz + 0.25, hh + 0.1)); ctx.lineTo(X(x + o.w * 0.3, zz), Y(zz, hh));
+        }
+        ctx.stroke();
+      }
+    }
+    if (z0 > NEAR) {
+      ctx.fillStyle = C.tail;
+      const yl = Y(z0, 0.18), th = 0.06 * UNIT_PX * s;
+      ctx.fillRect(X(x - o.w / 2 + 0.04, z0), yl, 0.14 * LANE_PX * s, th);
+      ctx.fillRect(X(x + o.w / 2 - 0.18, z0), yl, 0.14 * LANE_PX * s, th);
+    }
   }
 
   function drawObj(o) {
-    const a = clamp((FAR + 2 - o.z) / 10, 0, 1); // fade in from the horizon instead of popping
+    const a = clamp((FAR + 5 - o.z) / 10, 0, 1); // fade in from the horizon instead of popping
     if (a <= 0) return;
-    const s = scaleAt(o.z), cx = X(o.lane, o.z), w = LANE_PX * 0.8 * s, u = UNIT_PX * s;
     ctx.globalAlpha = a;
-    ctx.lineWidth = Math.max(2, 4 * s);
-    if (o.kind === 'ring') {
-      const cy = Y(o.z, o.h), r = 0.17 * u;
-      ctx.strokeStyle = C.ring; ctx.lineWidth = Math.max(2, 5 * s);
+    const zc = Math.max(o.z, NEAR), s = scaleAt(zc), u = UNIT_PX * s;
+    if (o.kind === 'car') drawCar(o);
+    else if (o.kind === 'truck' || o.kind === 'ramp') drawTruck(o);
+    else if (o.kind === 'coin') {
+      const cx = X(o.lane, o.z), cy = Y(o.z, o.h), r = 0.16 * u;
+      ctx.strokeStyle = C.yellow; ctx.lineWidth = Math.max(2, 5 * s);
       ctx.beginPath(); ctx.ellipse(cx, cy, Math.max(r * 0.25, r * Math.abs(Math.cos(S.anim * 5 + o.z))), r, 0, 0, Math.PI * 2); ctx.stroke();
-    } else if (o.kind === 'low') {
-      const top = Y(o.z, 0.4);
-      ctx.fillStyle = C.lowFill; ctx.strokeStyle = C.low;
-      ctx.fillRect(cx - w / 2, top, w, 0.4 * u); ctx.strokeRect(cx - w / 2, top, w, 0.4 * u);
-      for (let i = 1; i <= 3; i++) { const x0 = cx - w / 2 + (i * w) / 4; line(x0 - 0.1 * u, top + 0.4 * u, x0 + 0.1 * u, top); }
-    } else if (o.kind === 'high') {
-      ctx.strokeStyle = C.high;
-      line(cx - w / 2, Y(o.z), cx - w / 2, Y(o.z, 0.85)); line(cx + w / 2, Y(o.z), cx + w / 2, Y(o.z, 0.85));
-      const top = Y(o.z, 0.85);
-      ctx.fillStyle = C.highFill;
-      ctx.fillRect(cx - w / 2, top, w, 0.3 * u); ctx.strokeRect(cx - w / 2, top, w, 0.3 * u);
-    } else {
-      const top = Y(o.z, 1.4);
-      ctx.fillStyle = C.wallFill; ctx.strokeStyle = C.wall;
-      rrect(cx - w / 2, top, w, 1.4 * u, 10 * s); ctx.fill(); ctx.stroke();
-      ctx.lineWidth = Math.max(1, 3 * s);
-      ctx.strokeRect(cx - w * 0.36, top + 0.15 * u, w * 0.3, 0.25 * u);
-      ctx.strokeRect(cx + w * 0.06, top + 0.15 * u, w * 0.3, 0.25 * u);
-      line(cx - w / 2, top + 0.6 * u, cx + w / 2, top + 1.4 * u); line(cx + w / 2, top + 0.6 * u, cx - w / 2, top + 1.4 * u);
+    } else if (o.kind === 'power') {
+      const pc = POWERS[o.power].color, cx = X(o.lane, o.z), cy = Y(o.z, o.h + 0.08 * Math.sin(S.anim * 4)), r = 0.28 * u;
+      ctx.save(); ctx.translate(cx, cy); ctx.rotate(S.anim * 1.5);
+      ctx.strokeStyle = pc; ctx.fillStyle = '#000';
+      for (const [lw, al] of [[Math.max(4, 12 * s), 0.3 * a], [Math.max(2, 4 * s), a]]) {
+        ctx.globalAlpha = al; ctx.lineWidth = lw; ctx.strokeRect(-r, -r, r * 2, r * 2);
+      }
+      ctx.restore(); ctx.globalAlpha = a;
+      drawPowerIcon(o.power, cx, cy, r * 0.9, pc);
+    } else if (o.kind === 'cones') {
+      ctx.fillStyle = C.orange; ctx.strokeStyle = C.text; ctx.lineWidth = Math.max(1, 2 * s);
+      for (const dx of [-0.3, 0, 0.3]) {
+        const bx = X(o.lane + dx, o.z), by = Y(o.z), ty = Y(o.z, o.h), hw = 0.12 * LANE_PX * s;
+        ctx.beginPath(); ctx.moveTo(bx - hw, by); ctx.lineTo(bx + hw, by); ctx.lineTo(bx, ty); ctx.closePath(); ctx.fill();
+        line(bx - hw * 0.55, (by + ty) / 2, bx + hw * 0.55, (by + ty) / 2);
+      }
+    } else if (o.kind === 'barrier') {
+      const xl = X(o.lane - o.w / 2, zc), xr = X(o.lane + o.w / 2, zc), yt = Y(zc, 1.5), yb = Y(zc, 0.55);
+      ctx.strokeStyle = C.orange; ctx.lineWidth = Math.max(2, 4 * s);
+      line(xl + 6 * s, Y(zc), xl + 6 * s, yb); line(xr - 6 * s, Y(zc), xr - 6 * s, yb);
+      ctx.save();
+      ctx.beginPath(); ctx.rect(xl, yt, xr - xl, yb - yt); ctx.fillStyle = '#1c0a02'; ctx.fill(); ctx.clip();
+      ctx.strokeStyle = C.orange; ctx.lineWidth = Math.max(3, 10 * s);
+      ctx.beginPath();
+      for (let k = -(yb - yt); k < xr - xl; k += 26 * s) { ctx.moveTo(xl + k, yb); ctx.lineTo(xl + k + (yb - yt), yt); }
+      ctx.stroke(); ctx.restore();
+      ctx.strokeStyle = C.orange; ctx.lineWidth = Math.max(2, 3 * s); ctx.strokeRect(xl, yt, xr - xl, yb - yt);
+      if (Math.sin(S.anim * 10 + o.lane) > 0) {
+        ctx.fillStyle = C.yellow; ctx.beginPath(); ctx.arc((xl + xr) / 2, Y(zc, 1.62), Math.max(2, 8 * s), 0, Math.PI * 2); ctx.fill();
+      }
     }
     ctx.globalAlpha = 1;
   }
 
-  // The runner, seen from behind: yellow capsule, goggle strap, overalls.
+  // Your ride, seen from behind: a pink wedge with a full-width taillight bar.
   function drawPlayer() {
-    const x = X(S.px, 0), base = Y(0, S.y);
-    const running = (S.mode === 'play' || S.mode === 'title') && S.y === 0 && S.slide === 0;
-    const ph = Math.sin(S.anim * 14);
-    const bob = running ? Math.abs(ph) * 5 : 0;
-    ctx.globalAlpha = 1; ctx.lineCap = 'round';
-
-    if (S.y > 0.02) { // landing marker
-      ctx.strokeStyle = C.edge; ctx.lineWidth = 2; ctx.globalAlpha = 0.6;
-      ctx.beginPath(); ctx.ellipse(x, Y(0), 34, 9, 0, 0, Math.PI * 2); ctx.stroke(); ctx.globalAlpha = 1;
+    const x = S.px, y = S.y, z0 = -0.6, z1 = 0.9;
+    if (y > S.ground + 0.05) {
+      ctx.globalAlpha = 0.5; ctx.strokeStyle = C.cyan; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.ellipse(X(x, 0), Y(0, S.ground), 0.42 * LANE_PX * scaleAt(0), 10, 0, 0, Math.PI * 2); ctx.stroke();
     }
-
-    if (S.slide > 0) { // rolled into a ball
-      const r = 30, cy = base - r;
-      ctx.fillStyle = C.body; ctx.beginPath(); ctx.arc(x, cy, r, 0, Math.PI * 2); ctx.fill();
-      ctx.fillStyle = C.overalls; ctx.beginPath(); ctx.arc(x, cy, r, 0.15 * Math.PI, 0.85 * Math.PI); ctx.fill();
-      ctx.strokeStyle = C.strap; ctx.lineWidth = 6; line(x - r, cy - 8, x + r, cy - 8);
-      ctx.strokeStyle = C.edge; ctx.lineWidth = 2; ctx.globalAlpha = 0.6;
-      for (let i = 0; i < 3; i++) line(x - 60 - i * 8, cy - 12 + i * 12, x - 40 - i * 8, cy - 12 + i * 12);
-      ctx.globalAlpha = 1;
-      return;
+    ctx.globalAlpha = S.invuln > 0 && Math.floor(S.anim * 16) % 2 ? 0.35 : 1;
+    const px = X(x, z0), py = Y(z0, y);
+    ctx.save();
+    ctx.translate(px, py); ctx.rotate((S.lane - S.px) * 0.1); ctx.translate(-px, -py);
+    for (const dx of [-0.3, 0.3]) box(x + dx, 0.16, z0 + 0.08, z0 + 0.45, y, y + 0.2, C.cyan, '#000', 2);
+    box(x, 0.8, z0, z1, y + 0.1, y + 0.42, C.pink, '#2a0628', 3);
+    box(x, 0.58, z0 + 0.5, z0 + 1.2, y + 0.42, y + 0.66, C.cyan, '#061a26', 2.5);
+    const s = scaleAt(z0), xl = X(x - 0.36, z0), xr = X(x + 0.36, z0), ty = Y(z0, y + 0.33), th = 0.07 * UNIT_PX * s;
+    const ga = ctx.globalAlpha;
+    ctx.fillStyle = C.tail; ctx.globalAlpha = ga * 0.35; ctx.fillRect(xl - 4, ty - 4, xr - xl + 8, th + 8);
+    ctx.globalAlpha = ga; ctx.fillRect(xl, ty, xr - xl, th);
+    ctx.fillStyle = C.text; ctx.fillRect(X(x - 0.09, z0), Y(z0, y + 0.24), 0.18 * LANE_PX * s, 0.06 * UNIT_PX * s);
+    if (S.pw.nitro > 0) {
+      ctx.fillStyle = Math.floor(S.anim * 20) % 2 ? C.orange : C.yellow;
+      for (const dx of [-0.2, 0.2]) {
+        const ex = X(x + dx, z0), ey = Y(z0, y + 0.17);
+        ctx.beginPath(); ctx.moveTo(ex - 7, ey); ctx.lineTo(ex + 7, ey); ctx.lineTo(ex, ey + rand(18, 32)); ctx.closePath(); ctx.fill();
+      }
     }
-
-    const bw = 64, bh = 92, top = base - bh - 10 - bob;
-    // legs
-    ctx.strokeStyle = C.overalls; ctx.lineWidth = 9;
-    if (S.y > 0) { line(x - 12, top + bh, x - 16, top + bh + 6); line(x + 12, top + bh, x + 16, top + bh + 6); }
-    else { line(x - 12, top + bh - 4, x - 12 + ph * 8, base); line(x + 12, top + bh - 4, x + 12 - ph * 8, base); }
-    // arms
-    ctx.strokeStyle = C.body; ctx.lineWidth = 8;
-    const swing = S.y > 0 ? -14 : ph * 10;
-    line(x - bw / 2 + 3, top + 48, x - bw / 2 - 12, top + 64 + swing);
-    line(x + bw / 2 - 3, top + 48, x + bw / 2 + 12, top + 64 - swing);
-    // body
-    ctx.fillStyle = C.body; rrect(x - bw / 2, top, bw, bh, 30); ctx.fill();
-    // overalls (lower part, clipped to the body)
-    ctx.save(); rrect(x - bw / 2, top, bw, bh, 30); ctx.clip();
-    ctx.fillStyle = C.overalls; ctx.fillRect(x - bw / 2, top + bh * 0.62, bw, bh);
-    ctx.strokeStyle = C.overalls; ctx.lineWidth = 7;
-    line(x - bw / 2 + 6, top + bh * 0.25, x + bw / 2 - 8, top + bh * 0.66);
-    line(x + bw / 2 - 6, top + bh * 0.25, x - bw / 2 + 8, top + bh * 0.66);
     ctx.restore();
-    // goggle strap + hair
-    ctx.strokeStyle = C.strap; ctx.lineWidth = 8; line(x - bw / 2, top + 30, x + bw / 2, top + 30);
-    ctx.strokeStyle = C.body; ctx.lineWidth = 3;
-    line(x, top + 2, x - 4, top - 10); line(x + 6, top + 3, x + 9, top - 8); line(x - 6, top + 3, x - 11, top - 7);
+    if (S.pw.shield > 0) {
+      ctx.globalAlpha = 0.45 + 0.25 * Math.sin(S.anim * 6); ctx.strokeStyle = C.mint; ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.ellipse(X(x, 0), Y(0, y + 0.35), 0.62 * LANE_PX, 0.55 * UNIT_PX, 0, 0, Math.PI * 2); ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
   }
 
-  function centerText(txt, y, size, color, weight = 700) {
-    ctx.font = `${weight} ${size}px system-ui, -apple-system, Roboto, sans-serif`;
-    ctx.fillStyle = color; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.fillText(txt, CX, y);
+  function drawParts() {
+    for (const p of S.parts) {
+      if (p.z < NEAR) continue;
+      const s = scaleAt(p.z), sz = Math.max(2, 6 * s);
+      ctx.globalAlpha = clamp(p.life / p.max, 0, 1); ctx.fillStyle = p.color;
+      ctx.fillRect(X(p.x, p.z) - sz / 2, Y(p.z, p.h) - sz / 2, sz, sz);
+    }
+    ctx.globalAlpha = 1;
   }
 
+  function drawSpeedLines() {
+    if (!(S.pw.nitro > 0) || S.mode !== 'play') return;
+    ctx.strokeStyle = C.text; ctx.lineWidth = 2; ctx.globalAlpha = 0.35;
+    ctx.beginPath();
+    for (let i = 0; i < 10; i++) {
+      const ang = rand(0, Math.PI * 2), r0 = rand(160, 260), r1 = r0 + rand(40, 90);
+      ctx.moveTo(CX + Math.cos(ang) * r0, 330 + Math.sin(ang) * r0); ctx.lineTo(CX + Math.cos(ang) * r1, 330 + Math.sin(ang) * r1);
+    }
+    ctx.stroke(); ctx.globalAlpha = 1;
+  }
+
+  // ---------- HUD ----------
+  const FONT = (w, s, it = '') => `${it}${w} ${s}px system-ui, -apple-system, Roboto, sans-serif`;
+  function text(txt, x, y, size, color, weight = 700, align = 'center', it = '') {
+    ctx.font = FONT(weight, size, it); ctx.fillStyle = color; ctx.textAlign = align; ctx.textBaseline = 'middle';
+    ctx.fillText(txt, x, y);
+  }
+  function chroma(txt, y, size) { // vaporwave RGB-split title
+    text(txt, CX - 3, y, size, C.pink, 900, 'center', 'italic ');
+    text(txt, CX + 3, y + 1, size, C.cyan, 900, 'center', 'italic ');
+    text(txt, CX, y, size, C.text, 900, 'center', 'italic ');
+  }
   function panel(y, h) {
-    ctx.globalAlpha = 0.92; ctx.fillStyle = C.panel; rrect(CX - 230, y, 460, h, 22); ctx.fill();
-    ctx.globalAlpha = 0.7; ctx.strokeStyle = C.edge; ctx.lineWidth = 2; ctx.stroke(); ctx.globalAlpha = 1;
+    ctx.globalAlpha = 0.92; ctx.fillStyle = C.panel; rrect(CX - 250, y, 500, h, 22); ctx.fill();
+    ctx.globalAlpha = 0.8; ctx.strokeStyle = C.pink; ctx.lineWidth = 2; ctx.stroke(); ctx.globalAlpha = 1;
+  }
+  function chevrons(x, y, dir, color) {
+    ctx.strokeStyle = color; ctx.lineWidth = 4;
+    ctx.beginPath();
+    for (const o of [0, 12]) { const xx = x + dir * o; ctx.moveTo(xx - dir * 7, y - 9); ctx.lineTo(xx + dir * 2, y); ctx.lineTo(xx - dir * 7, y + 9); }
+    ctx.stroke();
   }
 
   function drawHud() {
     ctx.globalAlpha = 1;
     const blink = 0.55 + 0.45 * Math.sin(S.anim * 5);
     if (S.mode !== 'title') {
-      ctx.font = '700 26px system-ui, -apple-system, Roboto, sans-serif';
-      ctx.textBaseline = 'top'; ctx.textAlign = 'left'; ctx.fillStyle = C.text;
-      ctx.fillText(String(score()), 24, 20);
-      ctx.textAlign = 'right'; ctx.fillStyle = C.ring; ctx.fillText(String(S.rings), 576, 20);
-      ctx.strokeStyle = C.ring; ctx.lineWidth = 4;
-      const w = ctx.measureText(String(S.rings)).width;
-      ctx.beginPath(); ctx.ellipse(576 - w - 20, 33, 8, 11, 0, 0, Math.PI * 2); ctx.stroke();
+      text(String(Math.floor(S.score)), 22, 30, 26, C.text, 800, 'left');
+      const m = mult();
+      text(`x${m}`, 22, 60, 20, m >= 3 ? C.yellow : m === 2 ? C.cyan : C.dim, 800, 'left', 'italic ');
+      text(String(S.coins), 578, 30, 26, C.yellow, 800, 'right');
+      ctx.font = FONT(800, 26);
+      const cw = ctx.measureText(String(S.coins)).width;
+      ctx.strokeStyle = C.yellow; ctx.lineWidth = 4;
+      ctx.beginPath(); ctx.ellipse(578 - cw - 18, 30, 7, 10, 0, 0, Math.PI * 2); ctx.stroke();
+
+      // Lane map.
+      const n = laneCount(), bw = 16, gap = 5, x0 = CX - (n * bw + (n - 1) * gap) / 2;
+      for (let i = 0; i < n; i++) {
+        const l = S.L + i, fresh = S.t - (S.born[l] ?? -99) < FRESH_T;
+        ctx.strokeStyle = fresh ? C.mint : C.cyan; ctx.fillStyle = C.pink; ctx.lineWidth = 2;
+        rrect(x0 + i * (bw + gap), 18, bw, 26, 4);
+        if (l === S.lane) ctx.fill();
+        ctx.stroke();
+      }
+
+      // Active power-ups with time left.
+      let py = H - 34;
+      for (const k of Object.keys(POWERS)) {
+        const left = S.pw[k] || 0;
+        if (left <= 0) continue;
+        drawPowerIcon(k, 34, py, 18, POWERS[k].color);
+        ctx.fillStyle = POWERS[k].color; ctx.globalAlpha = 0.8;
+        ctx.fillRect(56, py - 3, 70 * Math.min(1, left / POWERS[k].dur), 6); ctx.globalAlpha = 1;
+        py -= 40;
+      }
+
+      if (S.mode === 'play' && S.arm) {
+        const col = S.arm === 'open' ? C.mint : C.orange;
+        chevrons(CX - 110, H - 40, -1, col); chevrons(CX + 110, H - 40, 1, col);
+        text(S.arm === 'open' ? 'OPEN LANE' : 'CLOSE LANE', CX, H - 40, 22, col, 800);
+      }
+
+      const block = S.objs.find((o) => o.kind === 'barrier' && o.z > 0);
+      if (S.mode === 'play' && block && Math.sin(S.anim * 9) > -0.3) {
+        ctx.globalAlpha = 0.9; ctx.fillStyle = '#2a0808'; rrect(CX - 190, 64, 380, 58, 14); ctx.fill();
+        ctx.strokeStyle = C.red; ctx.lineWidth = 2; ctx.stroke(); ctx.globalAlpha = 1;
+        text('ROAD CLOSED AHEAD', CX, 82, 20, C.red, 900);
+        text('pave a new lane!', CX, 106, 16, C.orange, 700);
+        chevrons(CX - 150, 94, -1, C.orange); chevrons(CX + 150, 94, 1, C.orange);
+      }
+      if (S.toast && S.mode === 'play') {
+        ctx.globalAlpha = clamp(S.toast.t / 0.4, 0, 1);
+        text(S.toast.text, CX, 180 - (1.4 - S.toast.t) * 20, 30, S.toast.color, 900, 'center', 'italic ');
+        ctx.globalAlpha = 1;
+      }
     }
+
     if (S.mode === 'title') {
-      panel(170, 250);
-      centerText('LANE RUNNER', 215, 46, C.body, 800);
-      centerText('Swipe left / right to switch lanes', 268, 19, C.dim, 500);
-      centerText('Swipe up to jump  ·  down to slide', 296, 19, C.dim, 500);
-      centerText('Pinch also jumps', 324, 19, C.dim, 500);
-      ctx.globalAlpha = blink; centerText('Pinch to start', 370, 26, C.text); ctx.globalAlpha = 1;
-      if (S.best) centerText(`Best ${S.best}`, 402, 18, C.ring, 600);
+      panel(118, 400);
+      chroma('LANE RUNNER', 164, 50);
+      text('V A P O R   F R E E W A Y', CX, 206, 18, C.pink, 700);
+      const rows = [
+        ['← →', 'steer · off the edge paves a lane'],
+        ['↑', 'jump · ride up the trucks'],
+        ['pinch + ← →', 'open a lane'],
+        ['↓ + ← →', 'close a lane (3 minimum)'],
+      ];
+      rows.forEach(([k, v], i) => {
+        text(k, CX - 80, 250 + i * 32, 18, C.cyan, 800, 'right');
+        text(v, CX - 64, 250 + i * 32, 17, C.dim, 500, 'left');
+      });
+      text('Fewer lanes = bigger multiplier', CX, 386, 18, C.yellow, 700);
+      ctx.globalAlpha = blink; text('Pinch to start', CX, 438, 28, C.text, 800); ctx.globalAlpha = 1;
+      if (S.best) text(`Best ${S.best}`, CX, 482, 18, C.yellow, 600);
     } else if (S.mode === 'paused') {
       panel(230, 130);
-      centerText('Paused', 272, 34, C.text, 800);
-      ctx.globalAlpha = blink; centerText('Pinch to resume', 322, 22, C.dim, 600); ctx.globalAlpha = 1;
+      text('Paused', CX, 272, 34, C.text, 800);
+      ctx.globalAlpha = blink; text('Pinch to resume', CX, 322, 22, C.dim, 600); ctx.globalAlpha = 1;
     } else if (S.mode === 'over') {
-      panel(170, 250);
-      centerText('WIPEOUT', 212, 44, C.wall, 800);
-      centerText(`Score ${score()}`, 266, 30, C.text);
-      centerText(`${S.rings} rings  ·  best ${S.best}`, 302, 19, C.dim, 500);
-      if (S.newBest) centerText('New best!', 334, 22, C.ring);
+      panel(160, 270);
+      chroma('WRECKED', 206, 46);
+      text(`Score ${Math.floor(S.score)}`, CX, 262, 30, C.text, 800);
+      text(`${S.coins} coins  ·  best ${S.best}`, CX, 300, 19, C.dim, 500);
+      if (S.newBest) text('New best!', CX, 334, 22, C.yellow, 800);
       const ready = performance.now() - S.overAt > RESTART_LOCK_MS;
-      ctx.globalAlpha = ready ? blink : 0.25; centerText('Pinch to run again', 382, 24, C.text); ctx.globalAlpha = 1;
+      ctx.globalAlpha = ready ? blink : 0.25; text('Pinch to drive again', CX, 384, 24, C.text, 800); ctx.globalAlpha = 1;
     }
   }
 
   function render() {
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.globalAlpha = 1; ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
     if (S.shake > 0) { const m = S.shake * 18; ctx.translate((Math.random() - 0.5) * m, (Math.random() - 0.5) * m); }
-    drawTrack();
+    drawSky();
+    drawGrid();
+    drawRoad();
+    drawPalms();
     const live = S.objs.filter((o) => !o.dead).sort((a, b) => b.z - a.z);
-    for (const o of live) if (o.z > 0) drawObj(o);
-    drawPlayer();
-    for (const o of live) if (o.z <= 0) drawObj(o);
+    const under = (o) => o.z > 0 || o === S.onObj;
+    for (const o of live) if (under(o)) drawObj(o);
+    if (S.mode !== 'title') drawPlayer();
+    for (const o of live) if (!under(o)) drawObj(o);
+    drawParts();
+    drawSpeedLines();
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     if (S.flash > 0) { ctx.globalAlpha = S.flash * 0.8; ctx.fillStyle = '#ff2840'; ctx.fillRect(0, 0, W, H); ctx.globalAlpha = 1; }
     drawHud();
   }
+
+  // Desktop testing hook (not used by the game itself).
+  window.__laneRunner = S;
+  window.__laneRunnerDebug = { reset, openLane, closeLane, update, render, addCar, addTruck, spawnBlock, add };
 
   // ---------- loop: capped at ~30 fps to match the 30 Hz panel ----------
   let raf = 0, last = 0;
