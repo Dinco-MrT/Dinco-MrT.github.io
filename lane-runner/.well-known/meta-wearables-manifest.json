@@ -1,7 +1,7 @@
 {
   "version": 1,
   "name": "Lane Runner",
-  "description": "A three-lane endless runner: swipe to switch lanes, jump and slide, grab rings.",
+  "description": "Vapor Freeway: a vaporwave freeway racer. Pave and close lanes, dodge traffic, ride the trucks, grab power-ups.",
   "appearance": {
     "theme_color": "#FFD23F",
     "icon": { "src": "icon.svg", "type": "monochrome" },
