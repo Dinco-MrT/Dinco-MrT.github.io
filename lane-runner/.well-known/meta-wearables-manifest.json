@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "name": "Lane Runner",
+  "description": "A three-lane endless runner: swipe to switch lanes, jump and slide, grab rings.",
+  "appearance": {
+    "theme_color": "#FFD23F",
+    "icon": { "src": "icon.svg", "type": "monochrome" },
+    "icon_background": { "colors": ["#1A6FE8", "#0B1E4D"], "stops": [0.0, 1.0] }
+  }
+}

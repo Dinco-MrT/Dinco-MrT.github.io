@@ -1,0 +1,459 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<!-- The glasses browser caches QR-opened pages hard; force a fresh fetch. -->
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
+<!-- Games use a fixed 600x600 stage (apps are responsive; games are not). -->
+<meta name="viewport" content="width=600, height=600, initial-scale=1.0">
+<meta name="description" content="A three-lane endless runner for Meta Ray-Ban Display: swipe to switch lanes, jump and slide, grab rings.">
+<!-- Without this the device routes no Neural Band / touchpad input to the page. -->
+<meta name="mrbd-web-app-capable" content="yes">
+<meta name="application-name" content="Lane Runner">
+<title>Lane Runner</title>
+<link rel="icon" type="image/png" sizes="96x96" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAYAAADimHc4AAAFLklEQVR42u1dsYoUQRBdEAQDPcFAEOUQBEHBw0Aw28z0EvMDf+D8Au8HhMsv2dTsMtNLzA8uMzr/4D5htcGBppmu7qp+VdMzUwULx87tzE5Vd9WrV2/YzcbNzc3Nzc3Nzc3Nza0Te/hxuw0vrffdMvbgzdHRu1+3tx/+7PfhFf4O76Hedw8XLHZa7DzU++5hwp58PjlJnYZ+hWu4pzP29uf1tXYAwjXc05miq+384eVFecReft/trAIQruUej+zeo4MDiSNf/7i6Ci/JZ8M13fP/7dnXs7Oco15dXF5Sx0rHc8fCNd3zBPSMHUUdKx3PHXNIWgE9g5Mefzo+zh0Px0rHqeA6JP1nVA4PDqJW8UAzUDuACnC49upph5xz3t/c3YVCSeXx4TxUDQjnCOfK/c+q6QkKer74dn5O7ZA4h+fSzLDCw7kcko5AT2pl3n9+eEit7jh9UGksHA/nKu201QXg6ZfT05JzKccNO6S0wodAUkEK38WhZ4JeSvRE7DQqmAPtQKGl1UHSWmfUOJYTqJqgrx56xg6rSS2cVFWT9hZvnIJYKq6x1Ti2tvAv2jiQsAQva3ZVmt9roO9qoWfaFFENVnrumoattvlbJe+TruoSxcBhVNMBTIn+WCX0TG+8RLJxkFX6/yUCcJHOp1b02E1zVrRkx1CLYZEjS+5wpDanS2tGaQi0GuiZGw/WohopaiqNQRcFSanVlmMjJQ0Tp28oQdJFjSwp6DmWb2s7W06PMbaiqboRvvPioWdOJFXL7XAY1lxhpcRgi4CkkhuUOFIaOMkCWQT0pLY4N5W0pi5uipyNSYsct5i2Fm8JSJgF7yOFeRw4iYCvEpg8a+hZanRaGiRJAydpFGfN+0gLaY0juBSGlCqZLfQs3QyXhEN+fjEquha6V7qCETtoESq61oGHNIcjasgiVHStIz8JikGiqFmr6BBDb0QKaOkjZq2ia5V9SDtZVCddE8CuVXStwicpCYfikmqQVLeQFPGlB8dd/N7t9zdb6CuckxPI2anoENt2SB2aAahNZbNS0aEK1xBEzQDUOm9WKjoUdBu2vWYAODl8Fio6ZPMyfEYzAJyGbhYqOlT7HiMg7QBwhizdq+hQBFaMorQDwEExXavokBRuTMJpB4DL73erokMOMeJzaQeAq3zrUkWHHuPFuVY7AFwc36WKDj3Ijj+vHQAOEqqBpJOMLJFSjnQ3WQSAu2q7UtGhxUzpzVkEQFI8u1HRob9IyrtYBEBCK3ehotPYiimVYREAKZUwuYpOoxil3aZFAKSM5qQqOi04ljY6FgGQdrGTqui0GpL0XBYBkEBRjQYUxvtI899YTbEKAPI7q/NDWqTU2CjTKgAto0VzFZ0WLTuW1qwC0JIuTFV0moOJsXxqFYCWumWqotMczY3tLKsAtK5UExWd9nB67JxWAWhBQiVIChtZasozcjdgGYDWBaSuotMUKOXgnGUAWukDVRWdtkQvt7ssA4BYpWqLVHt75YqYZQAQ+h6VNG1RYHIBtgwAArOrABULiJXbupYBQFEHUKhu1WRYKg0Qjz6ZNasWbXbr46hIJhc1SIHRNRZEU+vjqD1eD0JYWlGtFityih3XTNlbDRu0c/JUNadpaGU5bkM8jopanUj6uGlsazlwnuLxn5bHV1GQlMwiVpIL1OOoyN4Gqe8USXeoD6FFR6jHUZGUAbrwU+K10WtRTkHPOKlraYqbLK9LQdLstSx/BHmqH1zu+h4tfwZ8qp8cn8U9Dr9QtzEwy2ut7R7d3Pq3v9VrOh4dSnSyAAAAAElFTkSuQmCC">
+<style>
+  /* Additive display: black is see-through, so the page is pure black. */
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  body { display: grid; place-items: center; }
+  canvas { display: block; width: 600px; height: 600px; }
+</style>
+</head>
+<body>
+<canvas id="c" width="600" height="600" aria-label="Lane Runner"></canvas>
+<script>
+'use strict';
+(() => {
+  const W = 600, H = 600;
+  const ctx = document.getElementById('c').getContext('2d');
+
+  // ---------- tuning ----------
+  const START_SPEED = 11, MAX_SPEED = 26, ACCEL = 0.22;   // world units / s
+  const JUMP_V = 5.6, GRAVITY = 14.5, SLAM_V = -11;       // peak ≈ 1.08 units
+  const SLIDE_T = 0.65, LANE_SPEED = 9;                  // s, lanes / s
+  const RESTART_LOCK_MS = 700;
+
+  // ---------- pseudo-3D projection ----------
+  const HORIZON = 140, GROUND = 560, CX = 300;
+  const LANE_PX = 150, UNIT_PX = 120, D = 7, FAR = 60;
+  const scaleAt = (z) => D / (Math.max(z, -D * 0.85) + D);
+  const X = (x, z) => CX + x * LANE_PX * scaleAt(z);
+  const Y = (z, h = 0) => { const s = scaleAt(z); return HORIZON + (GROUND - HORIZON) * s - h * UNIT_PX * s; };
+  const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+
+  const C = {
+    edge: '#35e0ff', lane: '#1b8fa6', tie: '#12606f', post: '#2f7dff', sun: '#ff4fd8',
+    low: '#ff8a3d', lowFill: '#3d1a06', high: '#ff4fd8', highFill: '#330a2c',
+    wall: '#ff3355', wallFill: '#2e0710', ring: '#ffd84d',
+    body: '#ffd23f', overalls: '#3478ff', strap: '#9aa3ad', text: '#ffffff', dim: '#a9bcc6', panel: '#15181c',
+  };
+
+  // ---------- state ----------
+  const S = {
+    mode: 'title', // title | play | paused | over
+    t: 0, dist: 0, speed: START_SPEED, rings: 0, best: loadBest(), newBest: false,
+    lane: 0, px: 0, y: 0, vy: 0, slide: 0, slideQueued: false,
+    objs: [], sinceSpawn: 0, gapNext: 10, overAt: 0, shake: 0, flash: 0, anim: 0,
+  };
+  window.__laneRunner = S; // read-only hook for desktop testing
+
+  function loadBest() { try { return Number(localStorage.getItem('laneRunner.best')) || 0; } catch { return 0; } }
+  function saveBest(v) { try { localStorage.setItem('laneRunner.best', String(v)); } catch { /* storage unavailable */ } }
+  const score = () => Math.floor(S.dist) + S.rings * 10;
+
+  function reset() {
+    Object.assign(S, {
+      mode: 'play', t: 0, dist: 0, speed: START_SPEED, rings: 0, newBest: false,
+      lane: 0, px: 0, y: 0, vy: 0, slide: 0, slideQueued: false,
+      objs: [], sinceSpawn: 0, gapNext: 10, shake: 0, flash: 0,
+    });
+  }
+
+  // ---------- audio (tiny synth blips; context unlocked by the first pinch) ----------
+  let actx = null;
+  function unlockAudio() {
+    try {
+      if (!actx) actx = new (window.AudioContext || window.webkitAudioContext)();
+      if (actx.state === 'suspended') actx.resume();
+    } catch { actx = null; }
+  }
+  function tone(f1, f2, dur, type, vol) {
+    if (!actx || actx.state !== 'running') return;
+    const t0 = actx.currentTime, o = actx.createOscillator(), g = actx.createGain();
+    o.type = type;
+    o.frequency.setValueAtTime(f1, t0);
+    o.frequency.exponentialRampToValueAtTime(f2, t0 + dur);
+    g.gain.setValueAtTime(vol, t0);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    o.connect(g).connect(actx.destination);
+    o.start(t0); o.stop(t0 + dur + 0.02);
+  }
+  const sfx = {
+    jump: () => tone(300, 720, 0.15, 'square', 0.05),
+    slide: () => tone(520, 170, 0.16, 'sawtooth', 0.04),
+    swish: () => tone(900, 600, 0.06, 'triangle', 0.05),
+    ring: () => tone(1250, 1700, 0.08, 'square', 0.035),
+    crash: () => tone(220, 40, 0.5, 'sawtooth', 0.09),
+  };
+
+  // ---------- input ----------
+  // Neural Band / temple touchpad: thumb swipes arrive as Arrow keys, index pinch as Enter.
+  // Match on `key`: device events have an empty `code`. Escape (system Back) is left alone.
+  const DIRS = { ArrowLeft: 'left', ArrowRight: 'right', ArrowUp: 'up', ArrowDown: 'down' };
+  window.addEventListener('keydown', (e) => {
+    const k = e.key || e.code;
+    if (k === 'Enter' || k === ' ') {
+      e.preventDefault();
+      if (!e.repeat) onSelect();
+      return;
+    }
+    const d = DIRS[k];
+    if (d) {
+      e.preventDefault();
+      if (!e.repeat) onDir(d);
+    }
+  });
+
+  function onSelect() {
+    unlockAudio();
+    if (S.mode === 'title') reset();
+    else if (S.mode === 'play') jump();
+    else if (S.mode === 'paused') S.mode = 'play';
+    else if (S.mode === 'over' && performance.now() - S.overAt > RESTART_LOCK_MS) reset();
+  }
+
+  function onDir(d) {
+    if (S.mode !== 'play') return;
+    if (d === 'left' && S.lane > -1) { S.lane--; sfx.swish(); }
+    else if (d === 'right' && S.lane < 1) { S.lane++; sfx.swish(); }
+    else if (d === 'up') jump();
+    else if (d === 'down') duck();
+  }
+
+  function jump() {
+    if (S.y > 0.001) return;
+    S.slide = 0; S.vy = JUMP_V; sfx.jump();
+  }
+
+  function duck() {
+    if (S.y > 0.001) { S.vy = Math.min(S.vy, SLAM_V); S.slideQueued = true; } // slam down, slide on landing
+    else { S.slide = SLIDE_T; sfx.slide(); }
+  }
+
+  // ---------- world ----------
+  function shuffle(a) {
+    for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; }
+    return a;
+  }
+  const pickKind = () => { const r = Math.random(); return r < 0.4 ? 'low' : r < 0.7 ? 'high' : 'wall'; };
+
+  function spawnRow() {
+    const z = FAR;
+    const lanes = shuffle([-1, 0, 1]);
+    const p3 = Math.min(0.3, S.t / 150), p2 = Math.min(0.55, 0.2 + S.t / 90);
+    const r = Math.random();
+    const n = r < p3 ? 3 : r < p3 + p2 ? 2 : 1;
+    const kinds = Array.from({ length: n }, pickKind);
+    if (n === 3 && kinds.every((k) => k === 'wall')) kinds[Math.floor(Math.random() * 3)] = Math.random() < 0.5 ? 'low' : 'high';
+    for (let i = 0; i < n; i++) S.objs.push({ kind: kinds[i], lane: lanes[i], z });
+
+    const free = lanes.slice(n);
+    const lowIdx = kinds.indexOf('low');
+    if (free.length && Math.random() < 0.6) {
+      const L = free[Math.floor(Math.random() * free.length)];
+      for (let i = 0; i < 5; i++) S.objs.push({ kind: 'ring', lane: L, z: z + 2 + i * 1.5, h: 0.35 });
+    } else if (lowIdx >= 0 && Math.random() < 0.7) {
+      const L = lanes[lowIdx];
+      for (let i = 0; i < 5; i++) {
+        const t = i / 4;
+        S.objs.push({ kind: 'ring', lane: L, z: z - 2.4 + t * 4.8, h: 0.35 + 0.75 * Math.sin(Math.PI * t) });
+      }
+    }
+  }
+
+  function crash() {
+    S.mode = 'over'; S.overAt = performance.now(); S.shake = 0.35; S.flash = 0.3;
+    sfx.crash();
+    const sc = score();
+    if (sc > S.best) { S.best = sc; S.newBest = true; saveBest(sc); }
+  }
+
+  function step(h) {
+    const dz = S.speed * h;
+    S.dist += dz;
+
+    const diff = S.lane - S.px, maxMove = LANE_SPEED * h;
+    S.px += Math.abs(diff) <= maxMove ? diff : Math.sign(diff) * maxMove;
+
+    if (S.y > 0 || S.vy > 0) {
+      S.vy -= GRAVITY * h;
+      S.y += S.vy * h;
+      if (S.y <= 0) {
+        S.y = 0; S.vy = 0;
+        if (S.slideQueued) { S.slideQueued = false; S.slide = SLIDE_T; sfx.slide(); }
+      }
+    }
+    if (S.slide > 0) S.slide = Math.max(0, S.slide - h);
+
+    S.sinceSpawn += dz;
+    if (S.sinceSpawn >= S.gapNext) {
+      S.sinceSpawn = 0;
+      spawnRow();
+      S.gapNext = Math.max(8.5, 15 - S.speed * 0.25) + Math.random() * 3;
+    }
+
+    const bodyTop = S.y + (S.slide > 0 ? 0.4 : 0.9);
+    for (const o of S.objs) {
+      o.z -= dz;
+      if (o.dead || Math.abs(o.z) > 0.45 || Math.abs(S.px - o.lane) > 0.5) continue;
+      if (o.kind === 'ring') {
+        if (o.h + 0.15 >= S.y && o.h - 0.15 <= bodyTop) { o.dead = true; S.rings++; sfx.ring(); }
+        continue;
+      }
+      const hit =
+        o.kind === 'wall' ? true :
+        o.kind === 'low' ? S.y < 0.42 :
+        /* high beam spans h 0.55–0.85 */ !(bodyTop <= 0.55 || S.y >= 0.88);
+      if (hit) { crash(); return; }
+    }
+    S.objs = S.objs.filter((o) => o.z > -4 && !o.dead);
+  }
+
+  function update(dt) {
+    S.anim += dt;
+    S.shake = Math.max(0, S.shake - dt);
+    S.flash = Math.max(0, S.flash - dt);
+    if (S.mode === 'title') { S.dist += 5 * dt; return; }
+    if (S.mode !== 'play') return;
+    S.t += dt;
+    S.speed = Math.min(MAX_SPEED, START_SPEED + S.t * ACCEL);
+    // Sub-step so fast speeds can't tunnel through an obstacle.
+    const steps = Math.max(1, Math.ceil((S.speed * dt) / 0.35));
+    for (let i = 0; i < steps && S.mode === 'play'; i++) step(dt / steps);
+  }
+
+  // ---------- drawing ----------
+  function line(x1, y1, x2, y2) { ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke(); }
+  function rrect(x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
+  }
+
+  function drawTrack() {
+    const zn = -3, zf = FAR + 10;
+    // Retro sun on the horizon: strokes only, bright fills glare on an additive display.
+    ctx.strokeStyle = C.sun; ctx.lineWidth = 3; ctx.globalAlpha = 0.55;
+    ctx.beginPath(); ctx.arc(CX, HORIZON, 70, Math.PI, 0); ctx.stroke();
+    for (let i = 1; i <= 3; i++) { const yy = HORIZON - i * 16, dx = Math.sqrt(70 * 70 - (i * 16) ** 2); line(CX - dx, yy, CX + dx, yy); }
+    ctx.globalAlpha = 0.35; line(0, HORIZON, W, HORIZON);
+
+    // Faint track surface.
+    ctx.globalAlpha = 1; ctx.fillStyle = '#07161b';
+    ctx.beginPath();
+    ctx.moveTo(X(-1.5, zn), Y(zn)); ctx.lineTo(X(1.5, zn), Y(zn)); ctx.lineTo(X(1.5, zf), Y(zf)); ctx.lineTo(X(-1.5, zf), Y(zf));
+    ctx.closePath(); ctx.fill();
+
+    // Sleepers scrolling toward you.
+    ctx.strokeStyle = C.tie; ctx.lineWidth = 2;
+    const spacing = 3;
+    for (let z = -(S.dist % spacing); z < zf; z += spacing) {
+      if (z < zn) continue;
+      ctx.globalAlpha = clamp((zf - z) / FAR, 0.1, 1);
+      line(X(-1.5, z), Y(z), X(1.5, z), Y(z));
+    }
+
+    // Side pylons.
+    ctx.strokeStyle = C.post;
+    const pSpacing = 6;
+    for (let z = -(S.dist % pSpacing); z < zf; z += pSpacing) {
+      if (z < zn) continue;
+      const s = scaleAt(z);
+      ctx.globalAlpha = clamp((zf - z) / FAR, 0.1, 1);
+      ctx.lineWidth = Math.max(1, 4 * s);
+      for (const side of [-2.2, 2.2]) { line(X(side, z), Y(z), X(side, z), Y(z, 1.6)); line(X(side, z) - 10 * s, Y(z, 1.6), X(side, z) + 10 * s, Y(z, 1.6)); }
+    }
+
+    // Rails and lane dividers.
+    ctx.globalAlpha = 1;
+    ctx.strokeStyle = C.edge; ctx.lineWidth = 4;
+    for (const x of [-1.5, 1.5]) line(X(x, zn), Y(zn), X(x, zf), Y(zf));
+    ctx.strokeStyle = C.lane; ctx.lineWidth = 2;
+    for (const x of [-0.5, 0.5]) line(X(x, zn), Y(zn), X(x, zf), Y(zf));
+  }
+
+  function drawObj(o) {
+    const a = clamp((FAR + 2 - o.z) / 10, 0, 1); // fade in from the horizon instead of popping
+    if (a <= 0) return;
+    const s = scaleAt(o.z), cx = X(o.lane, o.z), w = LANE_PX * 0.8 * s, u = UNIT_PX * s;
+    ctx.globalAlpha = a;
+    ctx.lineWidth = Math.max(2, 4 * s);
+    if (o.kind === 'ring') {
+      const cy = Y(o.z, o.h), r = 0.17 * u;
+      ctx.strokeStyle = C.ring; ctx.lineWidth = Math.max(2, 5 * s);
+      ctx.beginPath(); ctx.ellipse(cx, cy, Math.max(r * 0.25, r * Math.abs(Math.cos(S.anim * 5 + o.z))), r, 0, 0, Math.PI * 2); ctx.stroke();
+    } else if (o.kind === 'low') {
+      const top = Y(o.z, 0.4);
+      ctx.fillStyle = C.lowFill; ctx.strokeStyle = C.low;
+      ctx.fillRect(cx - w / 2, top, w, 0.4 * u); ctx.strokeRect(cx - w / 2, top, w, 0.4 * u);
+      for (let i = 1; i <= 3; i++) { const x0 = cx - w / 2 + (i * w) / 4; line(x0 - 0.1 * u, top + 0.4 * u, x0 + 0.1 * u, top); }
+    } else if (o.kind === 'high') {
+      ctx.strokeStyle = C.high;
+      line(cx - w / 2, Y(o.z), cx - w / 2, Y(o.z, 0.85)); line(cx + w / 2, Y(o.z), cx + w / 2, Y(o.z, 0.85));
+      const top = Y(o.z, 0.85);
+      ctx.fillStyle = C.highFill;
+      ctx.fillRect(cx - w / 2, top, w, 0.3 * u); ctx.strokeRect(cx - w / 2, top, w, 0.3 * u);
+    } else {
+      const top = Y(o.z, 1.4);
+      ctx.fillStyle = C.wallFill; ctx.strokeStyle = C.wall;
+      rrect(cx - w / 2, top, w, 1.4 * u, 10 * s); ctx.fill(); ctx.stroke();
+      ctx.lineWidth = Math.max(1, 3 * s);
+      ctx.strokeRect(cx - w * 0.36, top + 0.15 * u, w * 0.3, 0.25 * u);
+      ctx.strokeRect(cx + w * 0.06, top + 0.15 * u, w * 0.3, 0.25 * u);
+      line(cx - w / 2, top + 0.6 * u, cx + w / 2, top + 1.4 * u); line(cx + w / 2, top + 0.6 * u, cx - w / 2, top + 1.4 * u);
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  // The runner, seen from behind: yellow capsule, goggle strap, overalls.
+  function drawPlayer() {
+    const x = X(S.px, 0), base = Y(0, S.y);
+    const running = (S.mode === 'play' || S.mode === 'title') && S.y === 0 && S.slide === 0;
+    const ph = Math.sin(S.anim * 14);
+    const bob = running ? Math.abs(ph) * 5 : 0;
+    ctx.globalAlpha = 1; ctx.lineCap = 'round';
+
+    if (S.y > 0.02) { // landing marker
+      ctx.strokeStyle = C.edge; ctx.lineWidth = 2; ctx.globalAlpha = 0.6;
+      ctx.beginPath(); ctx.ellipse(x, Y(0), 34, 9, 0, 0, Math.PI * 2); ctx.stroke(); ctx.globalAlpha = 1;
+    }
+
+    if (S.slide > 0) { // rolled into a ball
+      const r = 30, cy = base - r;
+      ctx.fillStyle = C.body; ctx.beginPath(); ctx.arc(x, cy, r, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = C.overalls; ctx.beginPath(); ctx.arc(x, cy, r, 0.15 * Math.PI, 0.85 * Math.PI); ctx.fill();
+      ctx.strokeStyle = C.strap; ctx.lineWidth = 6; line(x - r, cy - 8, x + r, cy - 8);
+      ctx.strokeStyle = C.edge; ctx.lineWidth = 2; ctx.globalAlpha = 0.6;
+      for (let i = 0; i < 3; i++) line(x - 60 - i * 8, cy - 12 + i * 12, x - 40 - i * 8, cy - 12 + i * 12);
+      ctx.globalAlpha = 1;
+      return;
+    }
+
+    const bw = 64, bh = 92, top = base - bh - 10 - bob;
+    // legs
+    ctx.strokeStyle = C.overalls; ctx.lineWidth = 9;
+    if (S.y > 0) { line(x - 12, top + bh, x - 16, top + bh + 6); line(x + 12, top + bh, x + 16, top + bh + 6); }
+    else { line(x - 12, top + bh - 4, x - 12 + ph * 8, base); line(x + 12, top + bh - 4, x + 12 - ph * 8, base); }
+    // arms
+    ctx.strokeStyle = C.body; ctx.lineWidth = 8;
+    const swing = S.y > 0 ? -14 : ph * 10;
+    line(x - bw / 2 + 3, top + 48, x - bw / 2 - 12, top + 64 + swing);
+    line(x + bw / 2 - 3, top + 48, x + bw / 2 + 12, top + 64 - swing);
+    // body
+    ctx.fillStyle = C.body; rrect(x - bw / 2, top, bw, bh, 30); ctx.fill();
+    // overalls (lower part, clipped to the body)
+    ctx.save(); rrect(x - bw / 2, top, bw, bh, 30); ctx.clip();
+    ctx.fillStyle = C.overalls; ctx.fillRect(x - bw / 2, top + bh * 0.62, bw, bh);
+    ctx.strokeStyle = C.overalls; ctx.lineWidth = 7;
+    line(x - bw / 2 + 6, top + bh * 0.25, x + bw / 2 - 8, top + bh * 0.66);
+    line(x + bw / 2 - 6, top + bh * 0.25, x - bw / 2 + 8, top + bh * 0.66);
+    ctx.restore();
+    // goggle strap + hair
+    ctx.strokeStyle = C.strap; ctx.lineWidth = 8; line(x - bw / 2, top + 30, x + bw / 2, top + 30);
+    ctx.strokeStyle = C.body; ctx.lineWidth = 3;
+    line(x, top + 2, x - 4, top - 10); line(x + 6, top + 3, x + 9, top - 8); line(x - 6, top + 3, x - 11, top - 7);
+  }
+
+  function centerText(txt, y, size, color, weight = 700) {
+    ctx.font = `${weight} ${size}px system-ui, -apple-system, Roboto, sans-serif`;
+    ctx.fillStyle = color; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(txt, CX, y);
+  }
+
+  function panel(y, h) {
+    ctx.globalAlpha = 0.92; ctx.fillStyle = C.panel; rrect(CX - 230, y, 460, h, 22); ctx.fill();
+    ctx.globalAlpha = 0.7; ctx.strokeStyle = C.edge; ctx.lineWidth = 2; ctx.stroke(); ctx.globalAlpha = 1;
+  }
+
+  function drawHud() {
+    ctx.globalAlpha = 1;
+    const blink = 0.55 + 0.45 * Math.sin(S.anim * 5);
+    if (S.mode !== 'title') {
+      ctx.font = '700 26px system-ui, -apple-system, Roboto, sans-serif';
+      ctx.textBaseline = 'top'; ctx.textAlign = 'left'; ctx.fillStyle = C.text;
+      ctx.fillText(String(score()), 24, 20);
+      ctx.textAlign = 'right'; ctx.fillStyle = C.ring; ctx.fillText(String(S.rings), 576, 20);
+      ctx.strokeStyle = C.ring; ctx.lineWidth = 4;
+      const w = ctx.measureText(String(S.rings)).width;
+      ctx.beginPath(); ctx.ellipse(576 - w - 20, 33, 8, 11, 0, 0, Math.PI * 2); ctx.stroke();
+    }
+    if (S.mode === 'title') {
+      panel(170, 250);
+      centerText('LANE RUNNER', 215, 46, C.body, 800);
+      centerText('Swipe left / right to switch lanes', 268, 19, C.dim, 500);
+      centerText('Swipe up to jump  ·  down to slide', 296, 19, C.dim, 500);
+      centerText('Pinch also jumps', 324, 19, C.dim, 500);
+      ctx.globalAlpha = blink; centerText('Pinch to start', 370, 26, C.text); ctx.globalAlpha = 1;
+      if (S.best) centerText(`Best ${S.best}`, 402, 18, C.ring, 600);
+    } else if (S.mode === 'paused') {
+      panel(230, 130);
+      centerText('Paused', 272, 34, C.text, 800);
+      ctx.globalAlpha = blink; centerText('Pinch to resume', 322, 22, C.dim, 600); ctx.globalAlpha = 1;
+    } else if (S.mode === 'over') {
+      panel(170, 250);
+      centerText('WIPEOUT', 212, 44, C.wall, 800);
+      centerText(`Score ${score()}`, 266, 30, C.text);
+      centerText(`${S.rings} rings  ·  best ${S.best}`, 302, 19, C.dim, 500);
+      if (S.newBest) centerText('New best!', 334, 22, C.ring);
+      const ready = performance.now() - S.overAt > RESTART_LOCK_MS;
+      ctx.globalAlpha = ready ? blink : 0.25; centerText('Pinch to run again', 382, 24, C.text); ctx.globalAlpha = 1;
+    }
+  }
+
+  function render() {
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.globalAlpha = 1; ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+    if (S.shake > 0) { const m = S.shake * 18; ctx.translate((Math.random() - 0.5) * m, (Math.random() - 0.5) * m); }
+    drawTrack();
+    const live = S.objs.filter((o) => !o.dead).sort((a, b) => b.z - a.z);
+    for (const o of live) if (o.z > 0) drawObj(o);
+    drawPlayer();
+    for (const o of live) if (o.z <= 0) drawObj(o);
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    if (S.flash > 0) { ctx.globalAlpha = S.flash * 0.8; ctx.fillStyle = '#ff2840'; ctx.fillRect(0, 0, W, H); ctx.globalAlpha = 1; }
+    drawHud();
+  }
+
+  // ---------- loop: capped at ~30 fps to match the 30 Hz panel ----------
+  let raf = 0, last = 0;
+  function frame(t) {
+    raf = requestAnimationFrame(frame);
+    if (!last) { last = t; return; }
+    const elapsed = t - last;
+    if (elapsed < 30) return;
+    last = t;
+    update(Math.min(elapsed / 1000, 0.05));
+    render();
+  }
+  function startLoop() { if (!raf) { last = 0; raf = requestAnimationFrame(frame); } }
+  function stopLoop() { if (raf) { cancelAnimationFrame(raf); raf = 0; } }
+
+  // Nothing may run while hidden.
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+      if (S.mode === 'play') S.mode = 'paused';
+      stopLoop();
+      if (actx && actx.state === 'running') actx.suspend();
+    } else {
+      startLoop();
+    }
+  });
+
+  render();
+  startLoop();
+})();
+</script>
+</body>
+</html>
