@@ -1,106 +1,128 @@
 // Headless checks for lane-runner. Usage: node tests/lane-runner.test.js [screenshot-dir]
 const { chromium } = (() => { try { return require('playwright'); } catch { return require('/opt/node22/lib/node_modules/playwright'); } })();
+const path = require('path');
+
 (async () => {
+  const SP = process.argv[2] || require('os').tmpdir();
   const b = await chromium.launch();
   const p = await b.newPage({ viewport: { width: 600, height: 600 } });
   const errs = [];
-  p.on('pageerror', e => errs.push(String(e)));
-  p.on('console', m => { if (m.type() === 'error') errs.push(m.text()); });
-  await p.clock.install();
-  await p.goto('file://' + require('path').resolve(__dirname, '../lane-runner/index.html'));
-  const SP = process.argv[2] || require('os').tmpdir();
+  p.on('pageerror', (e) => errs.push(String(e)));
+  p.on('console', (m) => { if (m.type() === 'error') errs.push(m.text()); });
+  await p.clock.install(); // freeze rAF; the test drives update() itself
+  await p.goto('file://' + path.resolve(__dirname, '../lane-runner/index.html'));
+
   const shot = async (n) => { await p.evaluate(() => __laneRunnerDebug.render()); await p.screenshot({ path: `${SP}/${n}.png` }); };
   const run = (sec) => p.evaluate((sec) => { for (let i = 0; i < sec * 30; i++) __laneRunnerDebug.update(1 / 30); }, sec);
-  const S = () => p.evaluate(() => { const s = __laneRunner; return { mode: s.mode, L: s.L, R: s.R, lane: s.lane, y: +s.y.toFixed(2), score: Math.floor(s.score), coins: s.coins }; });
+  const S = () => p.evaluate(() => { const s = __laneRunner; return { mode: s.mode, lane: s.lane, y: +s.y.toFixed(2), speed: +s.speed.toFixed(2), boost: +s.boost.toFixed(2), score: Math.floor(s.score), L: __laneRunnerDebug.laneAt('L', s.dist), R: __laneRunnerDebug.laneAt('R', s.dist) }; });
   const key = (k) => p.keyboard.press(k);
   const ok = (c, m) => { console.log((c ? 'PASS ' : 'FAIL ') + m); if (!c) process.exitCode = 1; };
-  const clean = () => p.evaluate(() => { const s = __laneRunner; s.objs = []; s.nextBlock = 999; s.nextPower = 999; s.sinceRow = -1e9; });
+  const fresh = () => p.evaluate(() => { __laneRunnerDebug.reset(); const s = __laneRunner; s.nextLane = 1e9; s.nextPower = 1e9; s.sinceRow = -1e9; });
 
-  await run(1); await shot('1-title');
+  await p.evaluate(() => __laneRunnerDebug.update(1 / 30)); await shot('1-title');
   await key('Enter'); ok((await S()).mode === 'play', 'pinch starts');
-  await clean();
-  await key('ArrowLeft'); await key('ArrowLeft');
-  let s = await S(); ok(s.L === -2 && s.lane === -2, 'steering off left edge paves a lane ' + JSON.stringify(s));
-  await key('Enter'); await key('ArrowRight'); s = await S(); ok(s.R === 2 && s.lane === -2, 'pinch+right opens right lane');
-  await key('ArrowDown'); await key('ArrowLeft'); s = await S(); ok(s.L === -1 && s.lane === -1, 'down+left closes left lane and shoves player');
-  await key('ArrowDown'); await key('ArrowLeft'); await key('ArrowDown'); await key('ArrowLeft'); s = await S();
-  ok(s.R - s.L + 1 === 3, 'cannot go below 3 lanes ' + JSON.stringify(s));
-  for (let i = 0; i < 8; i++) { await key('Enter'); await key('ArrowRight'); }
-  s = await S(); ok(s.R - s.L + 1 === 8, 'max 8 lanes ' + JSON.stringify(s));
-  // shift road right repeatedly
-  await p.evaluate(() => __laneRunnerDebug.reset()); await clean();
-  for (let i = 0; i < 4; i++) { await key('Enter'); await key('ArrowRight'); await key('ArrowDown'); await key('ArrowLeft'); }
-  s = await S(); ok(s.L === 3 && s.R === 5 && s.lane === 3, 'road can drift right forever ' + JSON.stringify(s));
-  await run(0.5); await shot('2-drifted');
 
-  // crash into a car
-  await p.evaluate(() => { __laneRunnerDebug.reset(); }); await clean();
-  await p.evaluate(() => __laneRunnerDebug.addCar(0, 6));
-  await run(3); ok((await S()).mode === 'over', 'hitting a car wrecks you');
-  await shot('3-wrecked');
+  // Controls.
+  await fresh();
+  await key('ArrowUp'); await run(1);
+  let s = await S(); ok(s.y === 0, 'swiping up does not jump');
+  ok(s.boost < 0.2 && s.speed > 15, 'swipe up boosts ' + JSON.stringify(s));
+  await run(3); const cruise = (await S()).speed;
+  await key('ArrowDown'); await run(0.5); ok((await S()).speed < cruise - 2, 'swipe down brakes');
+  await fresh();
+  await key('ArrowLeft'); await key('ArrowLeft'); await run(0.3);
+  s = await S(); ok(s.lane === -1 && s.L === -1, 'cannot steer off a 3-lane road');
 
-  // ramp truck ride
-  await p.evaluate(() => __laneRunnerDebug.reset()); await clean();
-  await p.evaluate(() => { const t = __laneRunnerDebug.addTruck(0, 5, true); });
+  // Speed keeps climbing past the old cap.
+  const sp = await p.evaluate(() => [0, 60, 200, 400].map((t) => __laneRunnerDebug.baseSpeed(t)));
+  ok(sp[0] < sp[1] && sp[1] < sp[2] && sp[2] > 28 && sp[3] <= 42, 'speed keeps climbing ' + sp.join(','));
+  await fresh(); await p.evaluate(() => { __laneRunner.t = 200; }); await run(2);
+  ok((await S()).speed > 28, 'late-game speed beats old 28 cap');
+
+  // The freeway opens a lane on its own.
+  await fresh();
+  await p.evaluate(() => __laneRunnerDebug.scheduleLaneChange());
+  await run(4); await shot('2-lane-opening'); await run(8);
+  s = await S(); ok(s.R - s.L + 1 === 4, 'a new lane opens ahead ' + JSON.stringify(s));
+  const side = s.L === -2 ? 'ArrowLeft' : 'ArrowRight';
+  await key(side); await key(side); await run(0.5);
+  s = await S(); ok(s.lane === (side === 'ArrowLeft' ? -2 : 2), 'can drive into the new lane ' + JSON.stringify(s));
+
+  // A lane ends: stay in it and you hit the board; merge and you're fine.
+  const endLane = async (merge) => {
+    await fresh();
+    await p.evaluate(() => {
+      const s = __laneRunner; s.road.L.v0 = -2; s.lane = -2; s.px = -2;
+      s.road.L.ch.push({ w: s.dist + 40, from: -2, to: -1 });
+      __laneRunnerDebug.add({ kind: 'barrier', lane: -2, z: 40, len: 0.6, w: 0.96, h: 1.5, dir: 1 });
+    });
+    await run(1.5); if (!merge) await shot('3-lane-ends');
+    if (merge) await key('ArrowRight');
+    await run(4);
+    return (await S()).mode;
+  };
+  ok((await endLane(false)) === 'over', 'staying in an ending lane wrecks you');
+  ok((await endLane(true)) === 'play', 'merging out of an ending lane survives');
+
+  // Traffic merges out of an ending lane instead of vanishing into the board.
+  await fresh();
+  const merged = await p.evaluate(() => {
+    const s = __laneRunner; s.road.R.v0 = 2;
+    s.road.R.ch.push({ w: s.dist + 50, from: 2, to: 1 });
+    const car = __laneRunnerDebug.addCar(2, 20);
+    for (let i = 0; i < 90; i++) __laneRunnerDebug.update(1 / 30);
+    return { lane: car.lane, to: car.mergeTo, dead: !!car.dead };
+  });
+  ok(merged.dead || merged.lane === 1 || merged.to === 1, 'traffic merges before its lane ends ' + JSON.stringify(merged));
+
+  // Trucks.
+  await fresh(); await p.evaluate(() => __laneRunnerDebug.addTruck(0, 5, 'ramp'));
   let maxY = 0;
-  for (let i = 0; i < 60; i++) { await run(1/30); const q = await S(); maxY = Math.max(maxY, q.y); if (i === 25) await shot('4-on-ramp-truck'); }
-  s = await S(); ok(s.mode === 'play' && maxY >= 0.99, 'drive up a ramp truck and off again maxY=' + maxY + ' ' + JSON.stringify(s));
+  for (let i = 0; i < 70; i++) { await run(1 / 30); maxY = Math.max(maxY, (await S()).y); if (i === 30) await shot('4-ramp-truck'); }
+  ok((await S()).mode === 'play' && maxY >= 0.99, 'drive up a car carrier maxY=' + maxY);
+  await fresh(); await p.evaluate(() => __laneRunnerDebug.addTruck(0, 6, 'semi')); await run(4);
+  ok((await S()).mode === 'over', 'rear-ending a semi wrecks you');
 
-  // box truck: jump onto it
-  await p.evaluate(() => __laneRunnerDebug.reset()); await clean();
-  await p.evaluate(() => __laneRunnerDebug.addTruck(0, 6, false));
-  let jumped = false; maxY = 0;
-  for (let i = 0; i < 90; i++) {
-    const z = await p.evaluate(() => __laneRunner.objs.find(o => o.kind === 'truck')?.z ?? -99);
-    if (!jumped && z < 2.6) { await key('ArrowUp'); jumped = true; }
-    await run(1/30); maxY = Math.max(maxY, (await S()).y);
-  }
-  s = await S(); ok(s.mode === 'play' && maxY >= 1.19, 'jump onto a box truck roof maxY=' + maxY + ' ' + JSON.stringify(s));
-  // box truck without jumping crashes
-  await p.evaluate(() => __laneRunnerDebug.reset()); await clean();
-  await p.evaluate(() => __laneRunnerDebug.addTruck(0, 6, false)); await run(3);
-  ok((await S()).mode === 'over', 'hitting a box truck rear wrecks you');
-
-  // nitro smash & shield
-  await p.evaluate(() => { __laneRunnerDebug.reset(); }); await clean();
-  await p.evaluate(() => { __laneRunner.pw.nitro = 5; __laneRunnerDebug.addCar(0, 8); });
-  await run(1.2); await shot('5-nitro'); await run(1); ok((await S()).mode === 'play', 'nitro smashes traffic');
-  await p.evaluate(() => { __laneRunnerDebug.reset(); }); await clean();
-  await p.evaluate(() => { __laneRunner.pw.shield = 5; __laneRunnerDebug.addCar(0, 6); }); await run(2);
+  // Near miss, horn, power-ups.
+  await fresh(); await p.evaluate(() => { __laneRunner.boost = 0; __laneRunnerDebug.addCar(1, 5); }); await run(3);
+  s = await S(); ok(s.boost >= 0.15 && s.mode === 'play', 'near miss charges boost ' + JSON.stringify(s));
+  await fresh(); await p.evaluate(() => { window.__c = __laneRunnerDebug.addCar(0, 9); });
+  await key('Enter'); ok(await p.evaluate(() => __c.mergeTo !== undefined), 'pinch horn makes the car ahead move over');
+  await run(3); ok((await S()).mode === 'play', 'car that moved over is not hit');
+  await fresh(); await p.evaluate(() => { __laneRunner.pw.nitro = 5; __laneRunnerDebug.addCar(0, 8); });
+  await run(1); await shot('5-nitro'); await run(1); ok((await S()).mode === 'play', 'nitro smashes traffic');
+  await fresh(); await p.evaluate(() => { __laneRunner.pw.shield = 5; __laneRunnerDebug.addCar(0, 6); }); await run(2);
   ok((await S()).mode === 'play' && !(await p.evaluate(() => __laneRunner.pw.shield)), 'shield absorbs one hit');
+  await fresh(); await p.evaluate(() => __laneRunnerDebug.add({ kind: 'power', power: 'turbo', lane: 0, z: 6, h: 0.55 })); await run(1);
+  ok((await S()).boost >= 2.9, 'turbo power-up fills boost');
 
-  // power pickup
-  await p.evaluate(() => { __laneRunnerDebug.reset(); }); await clean();
-  await p.evaluate(() => __laneRunnerDebug.add({ kind: 'power', power: 'magnet', lane: 0, z: 6, h: 0.55 })); await run(1);
-  ok(await p.evaluate(() => __laneRunner.pw.magnet > 0), 'picking up a power-up activates it');
+  // Showroom: every model up close.
+  await fresh();
+  await p.evaluate(() => {
+    const d = __laneRunnerDebug, s = __laneRunner; s.road.L.v0 = -2; s.road.R.v0 = 2;
+    ['wedge', 'delorean', 'muscle', 'cop', 'van'].forEach((m, i) => { const c = d.addCar(i - 2, 5 + (i % 2) * 5); c.model = m; c.frac = 0.999; });
+    const h = d.addCar(0, 17); h.model = 'hatch'; h.frac = 0.999;
+    [['semi', -2], ['tanker', 1], ['ramp', 2]].forEach(([k, l]) => { d.addTruck(l, 16, k, 0.999); });
+    s.base = 12; s.speed = 12;
+  });
+  await p.evaluate(() => { for (let i = 0; i < 3; i++) __laneRunnerDebug.update(1 / 30); }); await shot('6-showroom');
 
-  // barricade: stay put -> crash; pave -> survive
-  await p.evaluate(() => { __laneRunnerDebug.reset(); }); await clean();
-  await p.evaluate(() => __laneRunnerDebug.spawnBlock()); await run(2); await shot('6-roadblock');
-  await run(4); ok((await S()).mode === 'over', 'roadblock wrecks you if you stay');
-  await p.evaluate(() => { __laneRunnerDebug.reset(); }); await clean();
-  await p.evaluate(() => __laneRunnerDebug.spawnBlock()); await run(1);
-  await key('ArrowLeft'); await key('ArrowLeft'); await run(5);
-  ok((await S()).mode === 'play', 'paving around the roadblock survives');
-
-  // soak: natural spawning, random inputs, many runs
-  let wrecks = 0, maxT = 0;
-  for (let r = 0; r < 20; r++) {
+  // Soak: natural spawning and lane events with random inputs.
+  let wrecks = 0, events = 0, maxT = 0;
+  for (let r = 0; r < 12; r++) {
     await p.evaluate(() => __laneRunnerDebug.reset());
-    for (let i = 0; i < 400; i++) {
-      const k = ['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Enter'][Math.floor(Math.random()*5)];
-      if (Math.random() < 0.15) await key(k);
+    for (let i = 0; i < 500; i++) {
+      if (Math.random() < 0.15) await key(['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Enter'][Math.floor(Math.random() * 5)]);
       await run(0.1);
       if ((await S()).mode === 'over') { wrecks++; break; }
     }
+    events += await p.evaluate(() => __laneRunner.road.L.ch.length + __laneRunner.road.R.ch.length);
     maxT = Math.max(maxT, await p.evaluate(() => __laneRunner.t));
   }
-  console.log('soak: wrecks', wrecks, '/20, longest run', maxT.toFixed(1), 's');
-  // gameplay screenshot with traffic, 5 lanes
-  await p.evaluate(() => __laneRunnerDebug.reset());
-  await p.evaluate(() => { __laneRunner.invuln = 999; __laneRunner.pw.magnet = 8; __laneRunner.pw.hydro = 6; });
-  await key('Enter'); await key('ArrowRight'); await key('Enter'); await key('ArrowLeft');
-  await run(14); await shot('7-traffic');
+  console.log('soak: wrecks', wrecks, '/12, longest run', maxT.toFixed(1), 's, pending lane changes seen', events);
+
+  await p.evaluate(() => { __laneRunnerDebug.reset(); __laneRunner.invuln = 1e9; __laneRunner.t = 40; });
+  await run(20); await key('ArrowUp'); await run(0.6); await shot('7-traffic');
   const perf = await p.evaluate(() => { const t0 = performance.now(); for (let i = 0; i < 300; i++) __laneRunnerDebug.render(); return (performance.now() - t0) / 300; });
   console.log('avg render ms (desktop):', perf.toFixed(2), 'objs', await p.evaluate(() => __laneRunner.objs.length));
   ok(errs.length === 0, 'no page errors ' + errs.join(' | '));
