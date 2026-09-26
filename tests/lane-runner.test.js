@@ -114,6 +114,19 @@ const path = require('path');
   });
   ok(overlaps === 0, 'natural traffic never drives through obstacles (' + overlaps + ' overlapping frames)');
 
+  // Boosting smashes through light things (cones, lane-end boards) but not traffic.
+  for (const kind of ['cones', 'barrier']) {
+    await fresh();
+    await p.evaluate((kind) => { __laneRunner.boost = 3; __laneRunnerDebug.add({ kind, lane: 0, z: 14, len: kind === 'cones' ? 0.5 : 0.6, w: 0.9, h: kind === 'cones' ? 0.4 : 1.5, dir: 1 }); }, kind);
+    await key('ArrowUp'); await run(2);
+    ok((await S()).mode === 'play', 'boost smashes through ' + kind);
+  }
+  await fresh(); await p.evaluate(() => __laneRunnerDebug.add({ kind: 'cones', lane: 0, z: 10, len: 0.5, w: 0.9, h: 0.4 })); await run(2);
+  ok((await S()).mode === 'over', 'cones still wreck you without boost');
+  await fresh(); await p.evaluate(() => { __laneRunner.boost = 3; __laneRunnerDebug.addCar(0, 14); });
+  await key('ArrowUp'); await run(3);
+  ok((await S()).mode === 'over', 'boost does not smash cars');
+
   // Trucks.
   await fresh(); await p.evaluate(() => __laneRunnerDebug.addTruck(0, 5, 'ramp'));
   let maxY = 0;
