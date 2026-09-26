@@ -107,5 +107,5 @@ It also runs a random-input soak and a render benchmark, and saves screenshots: 
 
 ## Workflow
 
-- Work on a feature branch, run the test script, look at the screenshots, then commit and push. Open a PR to `main` and merge it to deploy (Pages serves `main`). Bump `BUILD` and the landing `?v=`.
+- **Always ship live ASAP** (the owner's standing instruction; see `CLAUDE.md`): work on a feature branch, run the test script and look at the screenshots, then commit, push, open a PR to `main` and merge it right away. Bump `BUILD` and the landing `?v=` each time.
 - Keep the style of the existing code: plain ES2020 in one IIFE, `'use strict'`, short comments only where the intent isn't obvious.
