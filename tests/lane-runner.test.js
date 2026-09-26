@@ -75,6 +75,45 @@ const path = require('path');
   });
   ok(merged.dead || merged.lane === 1 || merged.to === 1, 'traffic merges before its lane ends ' + JSON.stringify(merged));
 
+  // Traffic never drives through a static obstacle (it would hide it until the last moment).
+  for (const walls of [false, true]) {
+    await fresh();
+    const r = await p.evaluate((walls) => {
+      const d = __laneRunnerDebug, s = __laneRunner; s.lane = 1; s.px = 1;
+      const cones = d.add({ kind: 'cones', lane: 0, z: 40, len: 0.5, w: 0.9, h: 0.4 });
+      const car = d.addCar(0, 25); car.frac = 0.55;
+      if (walls) { d.addTruck(-1, 20, 'semi', car.frac); d.addTruck(1, 20, 'semi', car.frac); } // boxed in
+      let overlapped = false;
+      for (let i = 0; i < 150; i++) {
+        d.update(1 / 30);
+        if (s.mode !== 'play') { s.mode = 'play'; s.invuln = 1e9; }
+        if (!car.dead && s.objs.includes(cones) && s.objs.includes(car) && Math.abs(car.lane - cones.lane) < 0.5 && car.z < cones.z + cones.len && car.z + car.len > cones.z) overlapped = true;
+      }
+      return { overlapped, lane: car.lane, stopped: !!car.stopped };
+    }, walls);
+    ok(!r.overlapped && (walls ? r.stopped : r.lane !== 0), (walls ? 'boxed-in car stops behind cones ' : 'car changes lanes around cones ') + JSON.stringify(r));
+  }
+  await fresh();
+  ok(await p.evaluate(() => { const d = __laneRunnerDebug, c = d.addCar(1, 7); d.add({ kind: 'cones', lane: 1, z: 15, len: 0.5, w: 0.9, h: 0.4 }); for (let i = 0; i < 10; i++) d.update(1 / 30); return c.mergeTo !== 0 && Math.round(c.lane) !== 0; }), 'traffic never cuts into your lane right in front of you');
+
+  // Four minutes of natural traffic: no vehicle may ever overlap cones or a lane-end board.
+  const overlaps = await p.evaluate(() => {
+    const d = __laneRunnerDebug, s = __laneRunner; let n = 0;
+    for (let run = 0; run < 2; run++) {
+      d.reset(); s.invuln = 1e9;
+      for (let i = 0; i < 30 * 120; i++) {
+        d.update(1 / 30);
+        const statics = s.objs.filter((o) => !o.dead && (o.kind === 'cones' || o.kind === 'barrier') && o.z < 64);
+        for (const v of s.objs) {
+          if (v.dead || !['car', 'truck', 'ramp'].includes(v.kind)) continue;
+          for (const c of statics) if (Math.abs(v.lane - c.lane) < 0.6 && v.z < c.z + c.len && v.z + v.len > c.z && v.z < 60) n++;
+        }
+      }
+    }
+    return n;
+  });
+  ok(overlaps === 0, 'natural traffic never drives through obstacles (' + overlaps + ' overlapping frames)');
+
   // Trucks.
   await fresh(); await p.evaluate(() => __laneRunnerDebug.addTruck(0, 5, 'ramp'));
   let maxY = 0;
