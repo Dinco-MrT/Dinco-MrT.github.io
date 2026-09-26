@@ -1,4 +1,4 @@
-# Handoff: Lane Runner, Vapor Freeway (v2)
+# Handoff: Lane Runner, Vapor Freeway
 
 Paste this whole file into a new Claude Code session (web or cloud) as its first message.
 
@@ -20,10 +20,10 @@ A vaporwave freeway racer, seen from behind your car in pseudo-3D.
 - **The freeway changes lanes by itself.** Every 260–420 units of distance (roughly 12–25 s) one side either opens a new lane (it tapers in; a mint NEW LANE sign) or ends one (two yellow LANE ENDS signs, then a chevron arrow board, then a taper). The road always keeps 3–6 lanes and can drift sideways over time. If your lane is ending, a HUD banner tells you which way to merge. Staying in the lane means hitting the board.
 - **Traffic merges realistically.** Cars signal (amber blinker) and merge out of ending lanes, or take the exit if they can't. Faster traffic queues behind slower traffic.
 - **No jumping.** The only way off the ground is to drive up the yellow chevron ramp of a car carrier and ride its deck. From there you can move across onto neighbouring roofs, or drop off the end.
-- **Traffic models** (all rear views): Countach-style wedge with a wing, DeLorean with louvres, muscle car with stripes and round lights, cop car with a strobing light bar, 80s van with sunset stripes, and a hatchback. Trucks come as semis (VAPOR sunset logo, side stripes), tankers (ribbed cylinder, ladder, hazard diamond) and car carriers. Semis sometimes run in convoys, and there are cone rows.
-- **Your car** is a white/pink Testarossa-style wedge with louvred taillights, side strakes, a lip spoiler, scrolling tyre tread and cyan neon underglow. It yaws toward the lane it's heading for, rolls into turns, and buzzes with road vibration. The taillights flare when you brake, exhausts flame when you boost, and tyres smoke on hard lane changes at speed.
+- **Look: flat-coloured shapes.** Every vehicle is one solid colour, flat-shaded (roof lighter, side darker, via `shade()`), with just a few readable details: dark windows, taillights, and one signature feature per model. The models are a wedge with a wing, a DeLorean with a black tail panel, a muscle car with white stripes, a cop car with a red/blue light bar, a tall van, and a hatchback. Trucks come as semis (silver cab, coloured box), tankers (a cylinder) and car carriers (a yellow ramp). Keep new art in this style: shapes and colour, not line detail.
+- **Your car** is a pink wedge with a glowing taillight bar, a lip spoiler and cyan neon underglow. It yaws toward the lane it's heading for, rolls into turns, and buzzes with road vibration. The taillights flare when you brake, and the exhausts flame when you boost.
 - **Speed keeps climbing.** 12 → 25 u/s over the first minute, then +0.07 u/s² up to a cap of 42. The speedo reads u/s × 8.5 as km/h (about 100 → 360 km/h base, more when boosting).
-- **Boost** is a 3-segment meter. It charges slowly over time, with coins, and with near misses. A swipe up spends one segment for 2.5 s at 1.45× speed, with a FOV kick and speed lines.
+- **Boost** is a 3-segment meter. It charges slowly over time, with coins, and with near misses. A swipe up spends one segment for 2.5 s at 1.45× speed, with a FOV kick and speed lines. **While boosting you smash through cones and lane-end boards** (`LIGHT` set); cars and trucks still wreck you.
 - **Power-ups.**
   - MAGNET pulls in coins.
   - SHIELD absorbs one crash.
