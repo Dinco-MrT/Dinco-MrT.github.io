@@ -1,7 +1,7 @@
 {
   "version": 1,
   "name": "Lane Runner",
-  "description": "Vapor Freeway: a vaporwave freeway racer. Pave and close lanes, dodge traffic, ride the trucks, grab power-ups.",
+  "description": "Vapor Freeway: a vaporwave freeway racer. Weave through traffic as lanes open and end, boost, and ride the car carriers.",
   "appearance": {
     "theme_color": "#FFD23F",
     "icon": { "src": "icon.svg", "type": "monochrome" },

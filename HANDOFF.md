@@ -1,4 +1,4 @@
-# Handoff: Lane Runner, Vapor Freeway
+# Handoff: Lane Runner, Vapor Freeway (v2)
 
 Paste this whole file into a new Claude Code session (web or cloud) as its first message.
 
@@ -6,34 +6,31 @@ Paste this whole file into a new Claude Code session (web or cloud) as its first
 
 `Dinco-MrT/Dinco-MrT.github.io` is a GitHub Pages site that hosts web apps and games for **Meta Ray-Ban Display glasses**, with one folder per app. Pages is served from `main`. It has no build step: every game is one self-contained `index.html`.
 
-- `index.html` is the landing page, with one link card per app.
-- `lane-runner/index.html` is the game (about 1000 lines of vanilla JS drawing to a 600×600 canvas).
+- `index.html` is the landing page. It links to `lane-runner/?v=2`; bump the `?v=` when you ship, because the glasses cache hard.
+- `lane-runner/index.html` is the game (about 1200 lines of vanilla JS drawing to a 600×600 canvas). The title screen shows the build tag (`BUILD` constant, currently `v2`) so you can tell which build the glasses loaded.
 - `lane-runner/.well-known/meta-wearables-manifest.json` and `icon.svg` are the app manifest and icon for the glasses.
 - `tests/lane-runner.test.js` holds the headless Playwright checks (see Testing).
 
-Live URL once merged to `main`: https://dinco-mrt.github.io/lane-runner/
+Live URL: https://dinco-mrt.github.io/lane-runner/
 
 ## The game today
 
-A vaporwave freeway racer, seen from behind the car in pseudo-3D. Built on branch `claude/repo-overview-rc1v4o`.
+A vaporwave freeway racer, seen from behind your car in pseudo-3D.
 
-- **Lanes change while you drive.** The road starts with 3 lanes. You can open a lane on either edge or close either outermost lane, with a minimum of 3 and a maximum of 8. Open-left plus close-right can repeat forever, so the road drifts sideways; the original lanes don't have to survive.
-- **Multiplier.** 3 lanes pays x3, 4 lanes pays x2, 5 or more pays x1. The **2X** power-up doubles whatever the lanes give.
-- **Traffic.**
-  - Cars can be jumped over or driven across the roofs.
-  - Box trucks: jump onto the roof to ride them.
-  - Car-carrier trucks have a yellow chevron ramp you can just drive up.
-  - Trucks sometimes come in convoys.
-  - Cone rows can be jumped.
-- **Roadblocks.** Every 28–42 s a "ROAD CLOSED" barricade covers every lane that exists at that moment. To get past, you pave a new lane (or go through it with nitro).
-- **Fresh lanes.** A newly paved lane shimmers mint and gets no traffic for 2.5 s.
+- **The freeway changes lanes by itself.** Every 260–420 units of distance (roughly 12–25 s) one side either opens a new lane (it tapers in; a mint NEW LANE sign) or ends one (two yellow LANE ENDS signs, then a chevron arrow board, then a taper). The road always keeps 3–6 lanes and can drift sideways over time. If your lane is ending, a HUD banner tells you which way to merge. Staying in the lane means hitting the board.
+- **Traffic merges realistically.** Cars signal (amber blinker) and merge out of ending lanes, or take the exit if they can't. Faster traffic queues behind slower traffic.
+- **No jumping.** The only way off the ground is to drive up the yellow chevron ramp of a car carrier and ride its deck. From there you can move across onto neighbouring roofs, or drop off the end.
+- **Traffic models** (all rear views): Countach-style wedge with a wing, DeLorean with louvres, muscle car with stripes and round lights, cop car with a strobing light bar, 80s van with sunset stripes, and a hatchback. Trucks come as semis (VAPOR sunset logo, side stripes), tankers (ribbed cylinder, ladder, hazard diamond) and car carriers. Semis sometimes run in convoys, and there are cone rows.
+- **Your car** is a white/pink Testarossa-style wedge with louvred taillights, side strakes, a lip spoiler, scrolling tyre tread and cyan neon underglow. It yaws toward the lane it's heading for, rolls into turns, and buzzes with road vibration. The taillights flare when you brake, exhausts flame when you boost, and tyres smoke on hard lane changes at speed.
+- **Speed keeps climbing.** 12 → 25 u/s over the first minute, then +0.07 u/s² up to a cap of 42. The speedo reads u/s × 8.5 as km/h (about 100 → 360 km/h base, more when boosting).
+- **Boost** is a 3-segment meter. It charges slowly over time, with coins, and with near misses. A swipe up spends one segment for 2.5 s at 1.45× speed, with a FOV kick and speed lines.
 - **Power-ups.**
   - MAGNET pulls in coins.
   - SHIELD absorbs one crash.
-  - NITRO gives 1.6× speed and smashes anything you hit.
-  - HYDRAULICS gives 1.3× jump height.
+  - NITRO gives 1.6× speed and smashes through anything.
+  - BOOST FULL refills the meter.
   - SCORE 2X doubles scoring.
-- **Scoring.** Distance and coins both count, multiplied as above. The best score is saved in `localStorage` under `laneRunner.vaporBest`.
+- **Scoring.** Distance counts, coins are +10, near misses +30 (overtaking a vehicle in an adjacent lane), and smashes +25. Everything doubles under 2X. The best score is saved in `localStorage` under `laneRunner.vaporBest`.
 
 ### Controls (glasses input = key events)
 
@@ -41,33 +38,41 @@ The Neural Band and temple touchpad send swipes as `ArrowLeft/Right/Up/Down` and
 
 | Input | Action |
 |---|---|
-| ← / → | Steer. Steering off the edge paves a new lane and moves you into it. |
-| ↑ | Jump |
-| Pinch, then ← / → within 0.9 s | Open a lane on that side |
-| ↓, then ← / → within 0.9 s | Close the outermost lane on that side. ↓ in the air also slams you down. |
-| Pinch (title / game over / paused) | Start / restart / resume |
-| Desktop only: Q / E / Z / C | Open left / open right / close left / close right |
+| ← / → | Change lanes. You can't leave the road; hitting the edge gives a bump and a wobble. |
+| ↑ (swipe forward) | Boost (uses one charged segment) |
+| ↓ | Brake (0.7 s at 60% speed) |
+| Pinch | Horn: the vehicle ahead in your lane tries to move over. Also start / restart / resume. |
 
 ## Hard constraints for the glasses (don't break these)
 
 - **Additive display: black is see-through.** Keep the page background pure `#000`. Bright, large filled areas glare, so prefer strokes and dark translucent fills.
 - **Fixed 600×600 stage.** The page uses `<meta name="viewport" content="width=600, height=600">`. Games aren't responsive.
 - **`<meta name="mrbd-web-app-capable" content="yes">` must stay**, or the glasses route no input to the page.
-- **The no-cache meta tags must stay**, because the glasses browser caches QR-opened pages hard.
-- **Loop capped at about 30 fps** to match the 30 Hz panel. Nothing may run while hidden: the `visibilitychange` handler pauses the game, stops the loop and suspends audio.
-- **Weak CPU.** Don't use `shadowBlur` or per-frame gradients. Sky art (sun, mountains) is pre-rendered once to offscreen canvases. A frame renders in about 3.8 ms on desktop Chromium; assume the glasses are 5–10× slower, so keep the per-frame draw budget roughly where it is.
-- **Audio** is tiny Web Audio synth blips. The context is unlocked on the first pinch.
-- Keep everything **self-contained in one HTML file**: no external scripts, fonts or images. The favicon is an inline data URI in `<head>`; don't touch it.
+- **The no-cache meta tags must stay**, and bump `?v=` on the landing link plus `BUILD` when you ship.
+- **Loop capped at about 30 fps** to match the 30 Hz panel. Nothing may run while hidden: the `visibilitychange` handler pauses the game, stops the loop, and stops the engine drone and audio.
+- **Weak CPU.** Don't use `shadowBlur` or per-frame gradients. The sun, mountains, city skyline and horizon glow are pre-rendered once to offscreen canvases. A busy frame renders in about 5–6 ms on desktop Chromium. That's more than v1's 3.8 ms because of the new car details, so watch it: assume the glasses are 5–10× slower. If it stutters, cheaper level-of-detail for far cars is the first lever (see `detail` in `drawCar` / `drawTruck`).
+- **Audio** is tiny Web Audio synth blips plus a low sawtooth engine drone whose pitch tracks speed. The context is unlocked on the first pinch.
+- Keep everything **self-contained in one HTML file**. The favicon is an inline data URI in `<head>`; don't touch it.
 
 ## Code map (`lane-runner/index.html`)
 
-- **Tuning constants** at the top of the script: speeds, gravity, `STEP` (the tallest ledge you drive up without crashing), lane limits, `FRESH_T`, and the hitbox.
-- **Projection.** `X(x, z)`, `Y(z, h)` and `scaleAt(z)`, with the camera following `S.cam`. World x is measured in lanes, z is distance ahead (positive is in front of the player), h is height.
-- **State** is `S`. The road spans lanes `S.L..S.R` (integers). The player is at `S.lane` (target) and `S.px` (animated). `S.objs` holds world objects: `car | truck | ramp | cones | barrier | coin | power`.
-- **Movement.** Each object has `frac`, its speed as a fraction of base speed (0 for static things). Coins on a vehicle use `ride` to reference that vehicle, so they stay on it.
-- **Collisions** are in `step()`. `surf(o, u)` gives an object's surface height at distance `u` past its rear. If that height is more than `STEP` above the car, it's a crash; otherwise it becomes the ground (this is how ramps and roof riding work).
-- **Traffic** comes from `spawnRow()`, which always leaves at least one lane free. `convoy()` makes faster traffic queue behind slower traffic. Traffic that reaches a barricade "takes the exit" (disappears in a burst).
-- **Drawing.** `drawSky`, `drawGrid`, `drawRoad`, `drawPalms`, then `drawObj` sorted far to near, with the player drawn in between. `box()` is the generic pseudo-3D box (visible side, roof, rear).
+- **Tuning constants** at the top: speed curve, boost/brake/nitro multipliers, `STEP` (the tallest ledge you drive up, which is what makes ramps work), lane limits, `TAPER`, and the hitbox.
+- **Projection.** `X(x, z)`, `Y(z, h)` and `scaleAt(z)`. `S.D` is the focal distance, animated for the boost FOV kick, and `S.cam` is the sideways camera. World x is measured in lanes, z is distance ahead of the car, h is height.
+- **The freeway** is `S.road = { L: {v0, ch: []}, R: {...} }`. `v0` is that side's outermost lane; `ch` holds changes `{w, from, to}` at world distance `w`.
+  - `laneAt(side, w)` gives the usable outermost lane at `w`, used for steering, spawning and merges.
+  - `edgeAt(side, w)` gives the drawn edge, including tapers.
+  - `scheduleLaneChange()` adds a change about FAR + 40 ahead, plus its signs and barrier; `pruneRoad()` folds old changes into `v0`.
+- **State** is `S`. `S.objs` holds world objects: `car | truck | ramp | cones | barrier | sign | coin | power`.
+  - `frac` is an object's speed as a fraction of base speed (0 for static things).
+  - `ride` pins coins to a vehicle.
+  - `mergeTo` is a vehicle's lane change in progress.
+  - `model` picks the drawing (`MODELS` for cars; `semi | tanker | ramp` for trucks).
+- **Collisions** are in `step()`. `surf(o, u)` gives an object's surface height at `u` past its rear. If that's more than `STEP` above the car, it's a crash; otherwise it becomes the ground.
+- **Traffic.** `spawnRow()` always leaves one lane free, `convoy()` queues traffic, `trafficMerges()` handles lane-end merges and blinkers, and `tryMerge()` refuses to merge into the player.
+- **Drawing.**
+  - `box()` draws a pseudo-3D box that can be yawed. It culls the hidden side, then draws the roof and rear.
+  - `frame()` / `fx` / `fy` / `frect` / `fcircle` / `fpoly` draw on a rear face in local units (a = lanes across, b = height).
+  - Each car model's details are in `drawCar`'s switch; trucks are in `drawTruck`; your car is `drawPlayer`.
 - **Test hooks.** `window.__laneRunner` is the state and `window.__laneRunnerDebug` exposes the functions. Only the tests use them.
 
 ## Testing
@@ -78,19 +83,29 @@ Chromium and Playwright are in the cloud container. If the project's `playwright
 node tests/lane-runner.test.js /tmp/shots
 ```
 
-The script prints 17 PASS/FAIL checks: lane open/close rules, road drift, crashing into a car, riding a ramp truck, jumping onto a box truck, a box-truck crash, nitro, shield, power-up pickup, roadblock crash and bypass, and no page errors. It also runs a random-input soak and a render benchmark, and saves screenshots (`1-title.png`, `7-traffic.png`, …). Look at the screenshots after any visual change. The test uses `page.clock.install()` and calls `update()` directly, so it's deterministic apart from spawn randomness.
+The script prints 21 PASS/FAIL checks:
+- controls (boost doesn't jump, brake works, you can't leave the road)
+- the speed curve
+- a lane opening and driving into it
+- a lane ending (crash if you stay, survive if you merge)
+- traffic merging
+- riding a car carrier, and rear-ending a semi
+- near miss, horn, nitro, shield and turbo
+- no page errors
 
-## Ideas / next steps (pick up any of these)
+It also runs a random-input soak and a render benchmark, and saves screenshots: `1-title`, `2-lane-opening`, `3-lane-ends`, `4-ramp-truck`, `5-nitro`, `6-showroom` (every model at once) and `7-traffic`. **Look at the screenshots after any visual change.** For a close-up, use `deviceScaleFactor: 2` with a `clip`.
 
-1. **On-device feel pass.** Tune `START_SPEED`, `ACCEL`, traffic density in `spawnRow` (`dens`), and the jump window for box trucks. The window is about 0.5 s; relax it if it's too strict on the glasses.
-2. **AI lane changes.** Cars signal with blinkers, then drift into the next lane. Make sure a free path always exists.
-3. **Music.** A light synthwave arpeggio or bass loop scheduled with Web Audio lookahead. It needs a mute option (maybe long-press, or a title-screen toggle).
-4. **More scenery.** Neon streetlights, overhead gantry signs, a Helios bust or dolphin billboard, and day/night colour "zones" every ~1000 m.
-5. **Crash polish.** Glitch/RGB-split effect and car debris on crash, and a camera bank when changing lanes.
-6. **Performance.** If the glasses stutter, drop the palms to one side, reduce the grid lines, or cache the road layer.
-7. **Landing page** could show the app icon next to each card.
+## Ideas / next steps
+
+1. **On-device tuning.** Traffic density (`dens` in `spawnRow`), how often lanes change (`S.nextLane`), the speed curve, and boost charge rates.
+2. **Performance pass on the glasses.** Simplify far-away cars more aggressively, or cache car sprites per model and scale bucket.
+3. **Exits and on-ramps.** Traffic joining from a new lane's taper, and an occasional off-ramp split.
+4. **Music.** A light synthwave arpeggio or bass loop (Web Audio lookahead scheduling), with a mute option.
+5. **More scenery.** Overhead gantry signs, a Helios bust or dolphin billboards, tunnels, and colour "zones" every km.
+6. **Crash polish.** Car debris, a glitch/RGB-split effect, and a slow-mo moment.
+7. **More traffic.** Motorbikes that lane-split, a limo, or a police chase that reacts to your speed.
 
 ## Workflow
 
-- Work on a feature branch, run the test script, look at the screenshots, then commit and push. Merge to `main` to deploy; Pages serves `main`.
+- Work on a feature branch, run the test script, look at the screenshots, then commit and push. Open a PR to `main` and merge it to deploy (Pages serves `main`). Bump `BUILD` and the landing `?v=`.
 - Keep the style of the existing code: plain ES2020 in one IIFE, `'use strict'`, short comments only where the intent isn't obvious.

@@ -8,7 +8,7 @@
 <meta http-equiv="Expires" content="0">
 <!-- Games use a fixed 600x600 stage (apps are responsive; games are not). -->
 <meta name="viewport" content="width=600, height=600, initial-scale=1.0">
-<meta name="description" content="Lane Runner: Vapor Freeway. A vaporwave freeway racer for Meta Ray-Ban Display: pave and close lanes, dodge traffic, ride the trucks, grab power-ups.">
+<meta name="description" content="Lane Runner: Vapor Freeway. A vaporwave freeway racer for Meta Ray-Ban Display: weave through traffic as lanes open and end, boost, ride the car carriers.">
 <!-- Without this the device routes no Neural Band / touchpad input to the page. -->
 <meta name="mrbd-web-app-capable" content="yes">
 <meta name="application-name" content="Lane Runner">
@@ -26,27 +26,26 @@
 <script>
 'use strict';
 (() => {
-  const W = 600, H = 600;
+  const W = 600, H = 600, BUILD = 'v2';
   const ctx = document.getElementById('c').getContext('2d');
 
   // ---------- tuning ----------
-  const START_SPEED = 12, MAX_SPEED = 28, ACCEL = 0.2;   // world units / s
-  const JUMP_V = 7, GRAVITY = 16, SLAM_V = -14;          // peak ≈ 1.5 units: clears cars, reaches truck roofs
-  const HYDRO_JUMP = 1.3, NITRO_SPEED = 1.6;
-  const STEP = 0.22;                                     // tallest ledge the car drives up without crashing
-  const LANE_SPEED = 8;                                  // lanes / s
-  const MIN_LANES = 3, MAX_LANES = 8;
-  const ARM_T = 0.9;                                     // s a pinch / swipe-down waits for a left / right
-  const FRESH_T = 2.5;                                   // freshly paved lanes stay traffic-free this long
-  const HALF_LEN = 0.6, HALF_W = 0.36;                   // player hitbox
+  const START_SPEED = 12, EARLY_ACCEL = 0.22, LATE_ACCEL = 0.07, MAX_SPEED = 42; // world units / s, keeps climbing
+  const KMH = 8.5;                                     // world units / s → km/h on the speedo
+  const BOOST_MULT = 1.45, BOOST_T = 2.5, NITRO_MULT = 1.6, BRAKE_MULT = 0.6, BRAKE_T = 0.7;
+  const GRAVITY = 16, STEP = 0.22;                     // STEP: tallest ledge the car drives up (ramps)
+  const LANE_SPEED = 7;                                // lanes / s
+  const MIN_LANES = 3, MAX_LANES = 6, TAPER = 12;      // freeway lanes come and go; tapers are TAPER units long
+  const HALF_LEN = 0.6, HALF_W = 0.38;                 // player hitbox
   const RESTART_LOCK_MS = 800;
 
   // ---------- pseudo-3D projection; the camera slides sideways with the car ----------
   const HORIZON = 150, GROUND = 515, CX = 300;
-  const LANE_PX = 130, UNIT_PX = 120, D = 7, FAR = 64, NEAR = -4;
-  const scaleAt = (z) => D / (Math.max(z, -D * 0.85) + D);
+  const LANE_PX = 130, UNIT_PX = 120, FAR = 64, NEAR = -4;
+  const scaleAt = (z) => S.D / (Math.max(z, -S.D * 0.85) + S.D);
   const X = (x, z) => CX + (x - S.cam) * LANE_PX * scaleAt(z);
   const Y = (z, h = 0) => { const s = scaleAt(z); return HORIZON + (GROUND - HORIZON) * s - h * UNIT_PX * s; };
+  const P = (x, z, h) => [X(x, z), Y(z, h)];
   const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
   const approach = (v, t, m) => (Math.abs(t - v) <= m ? t : v + Math.sign(t - v) * m);
   const rand = (a, b) => a + Math.random() * (b - a);
@@ -59,16 +58,24 @@
 
   const C = {
     pink: '#ff4fd8', cyan: '#35e0ff', purple: '#9b5cff', yellow: '#ffd23f', orange: '#ff8a3d',
-    mint: '#3dffb5', red: '#ff3355', text: '#ffffff', dim: '#c3b4e6',
-    road: '#0d0418', grid: '#c21fb0', panel: '#140a22', tail: '#ff2a6d',
+    mint: '#3dffb5', red: '#ff3355', text: '#ffffff', dim: '#c3b4e6', chrome: '#9aa3b8',
+    road: '#0d0418', grid: '#c21fb0', panel: '#140a22', tail: '#ff2a6d', body: '#0b0714', glass: '#061a26',
   };
-  const CAR_COLS = [['#35e0ff', '#061c24'], ['#3dffb5', '#05231a'], ['#ffd23f', '#241e05'], ['#ff8a3d', '#261104'], ['#9b5cff', '#150930']];
-  const TRUCK_COLS = [['#9b5cff', '#12072a'], ['#35e0ff', '#051820'], ['#ff8a3d', '#1f0c03']];
+  // Traffic, all seen from behind. h = roof height (what you'd drive on).
+  const MODELS = {
+    wedge: { w: 0.8, h: 0.5, len: 1.8, cols: [C.yellow, C.red, C.cyan], p: 3 },     // Countach
+    delorean: { w: 0.78, h: 0.6, len: 1.8, cols: ['#d7e0ee'], p: 2 },
+    muscle: { w: 0.82, h: 0.62, len: 2.0, cols: [C.orange, C.mint, C.pink], p: 3 },
+    cop: { w: 0.78, h: 0.64, len: 1.9, cols: [C.text], p: 1 },
+    van: { w: 0.8, h: 0.98, len: 2.0, cols: [C.purple, C.cyan], p: 2 },
+    hatch: { w: 0.74, h: 0.62, len: 1.6, cols: [C.cyan, C.yellow, C.mint], p: 3 },
+  };
+  const MODEL_BAG = Object.entries(MODELS).flatMap(([k, m]) => Array(m.p).fill(k));
   const POWERS = {
     magnet: { label: 'MAGNET', color: C.cyan, dur: 10 },
     shield: { label: 'SHIELD', color: C.mint, dur: 15 },
     nitro: { label: 'NITRO', color: C.orange, dur: 5 },
-    hydro: { label: 'HYDRAULICS', color: C.purple, dur: 12 },
+    turbo: { label: 'BOOST FULL', color: C.purple, dur: 0 },
     double: { label: 'SCORE 2X', color: C.yellow, dur: 12 },
   };
   const SOLID = new Set(['car', 'truck', 'ramp', 'cones', 'barrier']);
@@ -77,33 +84,74 @@
   // ---------- state ----------
   const S = {
     mode: 'title', // title | play | paused | over
-    t: 0, dist: 0, score: 0, coins: 0, base: START_SPEED, speed: START_SPEED,
-    L: -1, R: 1, born: {}, eL: -1.5, eR: 1.5,
-    lane: 0, px: 0, y: 0, vy: 0, ground: 0, onObj: null,
-    arm: null, armT: 0, pw: {}, invuln: 0,
-    objs: [], parts: [], sinceRow: 0, gapNext: 14, nextPower: 8, nextBlock: 28,
-    cam: 0, shake: 0, flash: 0, anim: 0, overAt: 0, toast: null, streak: 0, streakT: 0,
+    t: 0, dist: 0, score: 0, coins: 0, base: START_SPEED, speed: START_SPEED, D: 7,
+    road: freshRoad(), lane: 0, px: 0, y: 0, vy: 0, ground: 0, onObj: null,
+    boost: 1, boostT: 0, brakeT: 0, hornT: 0, pw: {}, invuln: 0,
+    objs: [], parts: [], sinceRow: 0, gapNext: 14, nextPower: 8, nextLane: 160,
+    cam: 0, shake: 0, flash: 0, anim: 0, wobble: 0, bounce: 0, overAt: 0, toast: null, streak: 0, streakT: 0,
     best: loadBest(), newBest: false,
   };
 
   function loadBest() { try { return Number(localStorage.getItem('laneRunner.vaporBest')) || 0; } catch { return 0; } }
   function saveBest(v) { try { localStorage.setItem('laneRunner.vaporBest', String(v)); } catch { /* storage unavailable */ } }
-  const laneCount = () => S.R - S.L + 1;
-  const laneMult = () => (laneCount() <= 3 ? 3 : laneCount() === 4 ? 2 : 1); // a tight road pays more
-  const mult = () => laneMult() * (S.pw.double > 0 ? 2 : 1);
+  const mult = () => (S.pw.double > 0 ? 2 : 1);
   const grounded = () => S.y <= S.ground + 0.001 && S.vy <= 0;
+  const baseSpeed = (t) => Math.min(MAX_SPEED, t < 60 ? START_SPEED + t * EARLY_ACCEL : START_SPEED + 60 * EARLY_ACCEL + (t - 60) * LATE_ACCEL);
 
   function reset() {
     Object.assign(S, {
       mode: 'play', t: 0, dist: 0, score: 0, coins: 0, base: START_SPEED, speed: START_SPEED,
-      L: -1, R: 1, born: {}, lane: 0, px: 0, y: 0, vy: 0, ground: 0, onObj: null,
-      arm: null, armT: 0, pw: {}, invuln: 0, objs: [], parts: [],
-      sinceRow: 0, gapNext: 14, nextPower: 8, nextBlock: 28, toast: null, streak: 0, streakT: 0, newBest: false,
+      road: freshRoad(), lane: 0, px: 0, y: 0, vy: 0, ground: 0, onObj: null,
+      boost: 1, boostT: 0, brakeT: 0, hornT: 0, pw: {}, invuln: 0, objs: [], parts: [],
+      sinceRow: 0, gapNext: 14, nextPower: 8, nextLane: 160, toast: null, streak: 0, streakT: 0, newBest: false,
     });
   }
 
-  // ---------- audio (tiny synth blips; context unlocked by the first pinch) ----------
-  let actx = null;
+  // ---------- the freeway: lanes open and end along the road ----------
+  // Each side has a starting outermost lane and a list of changes at world distance w.
+  // Opening: the new lane tapers in over TAPER and is usable from halfway through.
+  // Ending: the lane is usable up to w (a chevron board sits there), then the edge tapers in.
+  function freshRoad() { return { L: { v0: -1, ch: [] }, R: { v0: 1, ch: [] } }; }
+  const dirOf = (side) => (side === 'L' ? -1 : 1);
+  const isOpening = (side, c) => (c.to - c.from) * dirOf(side) > 0;
+  function laneAt(side, w) {
+    const sd = S.road[side];
+    let v = sd.v0;
+    for (const c of sd.ch) if (w >= (isOpening(side, c) ? c.w + TAPER * 0.5 : c.w)) v = c.to;
+    return v;
+  }
+  function edgeAt(side, w) {
+    const sd = S.road[side];
+    let e = sd.v0;
+    for (const c of sd.ch) if (w >= c.w) e = c.from + (c.to - c.from) * Math.min(1, (w - c.w) / TAPER);
+    return e + dirOf(side) * 0.5;
+  }
+  const lastLane = (side) => { const ch = S.road[side].ch; return ch.length ? ch[ch.length - 1].to : S.road[side].v0; };
+
+  function scheduleLaneChange() {
+    const n = lastLane('R') - lastLane('L') + 1;
+    const open = n <= MIN_LANES ? true : n >= MAX_LANES ? false : Math.random() < 0.5;
+    const w = S.dist + FAR + 40;
+    const sides = shuffle(['L', 'R']).filter((sd) => { const ch = S.road[sd].ch; return !ch.length || w - ch[ch.length - 1].w > TAPER + 40; });
+    if (!sides.length) return;
+    const side = sides[0], d = dirOf(side), from = lastLane(side), to = open ? from + d : from - d;
+    S.road[side].ch.push({ w, from, to });
+    if (open) add({ kind: 'sign', side, z: w - S.dist + TAPER * 0.5, text: 'NEW LANE', col: C.mint, dir: d });
+    else {
+      add({ kind: 'barrier', lane: from, z: w - S.dist, len: 0.6, w: 0.96, h: 1.5, dir: -d });
+      for (const back of [36, 18]) add({ kind: 'sign', side, z: w - back - S.dist, text: 'LANE ENDS', col: C.yellow, dir: -d });
+    }
+  }
+
+  function pruneRoad() {
+    for (const side of ['L', 'R']) {
+      const sd = S.road[side];
+      while (sd.ch.length && sd.ch[0].w + TAPER < S.dist - 20) sd.v0 = sd.ch.shift().to;
+    }
+  }
+
+  // ---------- audio (tiny synth blips + an engine drone; unlocked by the first pinch) ----------
+  let actx = null, eng = null;
   function unlockAudio() {
     try {
       if (!actx) actx = new (window.AudioContext || window.webkitAudioContext)();
@@ -121,14 +169,23 @@
     o.connect(g).connect(actx.destination);
     o.start(t0); o.stop(t0 + dur + 0.02);
   }
+  function engine(on) {
+    if (on && !eng && actx && actx.state === 'running') {
+      const o = actx.createOscillator(), f = actx.createBiquadFilter(), g = actx.createGain();
+      o.type = 'sawtooth'; f.type = 'lowpass'; f.frequency.value = 380; g.gain.value = 0.016;
+      o.connect(f).connect(g).connect(actx.destination); o.start();
+      eng = { o };
+    } else if (!on && eng) { eng.o.stop(); eng = null; }
+  }
   const sfx = {
-    jump: () => tone(260, 700, 0.16, 'square', 0.05),
     swish: () => tone(900, 600, 0.06, 'triangle', 0.05),
-    arm: () => tone(700, 780, 0.05, 'triangle', 0.04),
-    pave: () => { tone(200, 900, 0.22, 'sawtooth', 0.045); tone(400, 1800, 0.22, 'triangle', 0.03); },
-    close: () => tone(900, 160, 0.22, 'sawtooth', 0.045),
+    bump: () => tone(120, 80, 0.12, 'square', 0.05),
+    boost: () => { tone(180, 900, 0.35, 'sawtooth', 0.05); tone(360, 1800, 0.35, 'triangle', 0.03); },
+    brake: () => tone(700, 300, 0.2, 'triangle', 0.03),
+    horn: () => { tone(392, 392, 0.28, 'square', 0.035); tone(494, 494, 0.28, 'square', 0.03); },
     deny: () => tone(150, 110, 0.18, 'square', 0.05),
     coin: () => { const f = 1100 * (1 + Math.min(S.streak, 12) * 0.05); tone(f, f * 1.35, 0.08, 'square', 0.03); },
+    near: () => tone(1500, 2400, 0.1, 'triangle', 0.04),
     power: () => [523, 659, 784, 1046].forEach((f, i) => tone(f, f * 1.01, 0.1, 'square', 0.035, i * 0.06)),
     smash: () => tone(320, 60, 0.25, 'sawtooth', 0.07),
     land: () => tone(160, 90, 0.08, 'triangle', 0.05),
@@ -139,7 +196,6 @@
   // Neural Band / temple touchpad: thumb swipes arrive as Arrow keys, index pinch as Enter.
   // Match on `key`: device events have an empty `code`. Escape (system Back) is left alone.
   const DIRS = { ArrowLeft: 'left', ArrowRight: 'right', ArrowUp: 'up', ArrowDown: 'down' };
-  const DESK = { q: ['open', -1], e: ['open', 1], z: ['close', -1], c: ['close', 1] }; // desktop testing shortcuts
   window.addEventListener('keydown', (e) => {
     const k = e.key || e.code;
     if (k === 'Enter' || k === ' ') {
@@ -151,64 +207,47 @@
     if (d) {
       e.preventDefault();
       if (!e.repeat) onDir(d);
-      return;
     }
-    const m = DESK[String(k).toLowerCase()];
-    if (m && !e.repeat && S.mode === 'play') (m[0] === 'open' ? openLane : closeLane)(m[1]);
   });
 
   function onSelect() {
     unlockAudio();
     if (S.mode === 'title') reset();
-    else if (S.mode === 'play') { S.arm = 'open'; S.armT = ARM_T; sfx.arm(); }
+    else if (S.mode === 'play') honk();
     else if (S.mode === 'paused') S.mode = 'play';
     else if (S.mode === 'over' && performance.now() - S.overAt > RESTART_LOCK_MS) reset();
   }
 
   function onDir(d) {
     if (S.mode !== 'play') return;
-    if (d === 'left' || d === 'right') {
-      const side = d === 'left' ? -1 : 1, arm = S.arm;
-      S.arm = null;
-      if (arm === 'open') openLane(side);
-      else if (arm === 'close') closeLane(side);
-      else steer(side);
-    } else if (d === 'up') {
-      S.arm = null; jump();
-    } else if (d === 'down') {
-      if (!grounded()) S.vy = Math.min(S.vy, SLAM_V);
-      S.arm = 'close'; S.armT = ARM_T; sfx.arm();
-    }
+    if (d === 'left') steer(-1);
+    else if (d === 'right') steer(1);
+    else if (d === 'up') boost();
+    else brake();
   }
 
   function steer(side) {
     const to = S.lane + side;
-    if (to < S.L || to > S.R) { if (!openLane(side)) return; } // driving off the edge paves a new lane
-    else sfx.swish();
-    S.lane = to;
+    if (to < laneAt('L', S.dist + 1) || to > laneAt('R', S.dist + 1)) { sfx.bump(); S.wobble = 0.07 * side; S.shake = 0.08; return; }
+    S.lane = to; sfx.swish();
   }
 
-  function jump() {
-    if (!grounded()) return;
-    S.vy = JUMP_V * (S.pw.hydro > 0 ? HYDRO_JUMP : 1); sfx.jump();
+  function boost() {
+    if (S.boostT > 0) return;
+    if (S.boost < 1) { sfx.deny(); toast('BOOST CHARGING', C.dim); return; }
+    S.boost -= 1; S.boostT = BOOST_T; S.shake = 0.12; sfx.boost();
   }
 
-  function openLane(side) {
-    if (laneCount() >= MAX_LANES) { sfx.deny(); toast(`MAX ${MAX_LANES} LANES`, C.red); return false; }
-    const l = side < 0 ? --S.L : ++S.R;
-    S.born[l] = S.t;
-    sfx.pave();
-    for (let z = 0; z < 30; z += 3) burst(l, z, 0.05, 2, C.mint, 2, 0.5);
-    return true;
-  }
+  function brake() { S.brakeT = BRAKE_T; S.boostT = 0; sfx.brake(); }
 
-  function closeLane(side) {
-    if (laneCount() <= MIN_LANES) { sfx.deny(); toast(`MIN ${MIN_LANES} LANES`, C.red); return false; }
-    const l = side < 0 ? S.L++ : S.R--;
-    for (const o of S.objs) if (!o.dead && Math.round(o.lane) === l) poof(o);
-    if (S.lane === l) S.lane -= side; // shoved over; whatever is in the next lane is your problem
-    sfx.close();
-    return true;
+  // Pinch = horn: traffic right in front of you tries to move over.
+  function honk() {
+    if (S.hornT > 0) return;
+    S.hornT = 1.2; sfx.horn();
+    for (const o of S.objs) {
+      if (o.dead || !VEHICLE.has(o.kind) || o.mergeTo !== undefined || Math.round(o.lane) !== S.lane || o.z < 0 || o.z > 16) continue;
+      for (const d of shuffle([-1, 1])) if (tryMerge(o, S.lane + d)) break;
+    }
   }
 
   // ---------- world ----------
@@ -217,67 +256,71 @@
   // Height of an object's surface at distance u past its rear (-1 = not under you).
   function surf(o, u) {
     if (u < 0 || u > o.len) return -1;
-    if (o.kind === 'truck') return u > o.len - 1.3 ? 0.95 : o.h;
-    if (o.kind === 'ramp') return u < 2.4 ? (o.h * u) / 2.4 : u > o.len - 1.3 ? 0.95 : o.h;
+    if (o.kind === 'truck') return u > o.len - 1.4 ? 1.0 : o.h;
+    if (o.kind === 'ramp') return u < 2.4 ? (o.h * u) / 2.4 : u > o.len - 1.4 ? 1.0 : o.h;
     return o.h;
   }
 
-  function laneClearAt(l, z0, z1) {
-    return !S.objs.some((o) => !o.dead && SOLID.has(o.kind) && Math.round(o.lane) === l && o.z < z1 && o.z + o.len > z0);
+  function laneClearAt(l, z0, z1, except = null) {
+    return !S.objs.some((o) => o !== except && !o.dead && SOLID.has(o.kind) &&
+      (Math.round(o.lane) === l || o.mergeTo === l) && o.z < z1 && o.z + o.len > z0);
   }
 
-  function coinLine(lane, z, n, ride = null, h = 0.35) {
-    for (let i = 0; i < n; i++) add({ kind: 'coin', lane, z: z + i * 1.4, h, ride });
+  function tryMerge(o, nl) {
+    const w = S.dist + o.z;
+    if (nl < laneAt('L', w + o.len) || nl > laneAt('R', w + o.len)) return false;
+    if (!laneClearAt(nl, o.z - 2.5, o.z + o.len + 2.5, o)) return false;
+    if (Math.abs(nl - S.px) < 0.9 && o.z < 3 && o.z + o.len > -3) return false; // never merge into the player
+    o.mergeTo = nl;
+    return true;
   }
 
   function addCar(lane, z) {
-    const car = add({ kind: 'car', lane, z, len: 1.8, w: 0.74, h: 0.62, frac: rand(0.35, 0.55), col: pick(CAR_COLS) });
-    if (Math.random() < 0.25) {
-      for (let i = 0; i < 5; i++) { const t = i / 4; add({ kind: 'coin', lane, z: z - 1.6 + t * 5, h: 0.4 + 1.0 * Math.sin(Math.PI * t), ride: car }); }
-    }
+    const model = pick(MODEL_BAG), M = MODELS[model];
+    const car = add({ kind: 'car', model, lane, z, len: M.len, w: M.w, h: M.h, frac: rand(0.35, 0.55), col: pick(M.cols) });
+    if (model === 'cop') car.frac = rand(0.55, 0.62);
     return car;
   }
 
-  function addTruck(lane, z, ramp, frac = rand(0.5, 0.58)) {
-    const t = add({ kind: ramp ? 'ramp' : 'truck', lane, z, len: 7, w: 0.88, h: ramp ? 1.0 : 1.2, frac, col: pick(TRUCK_COLS) });
-    if (Math.random() < 0.6) for (let i = 0; i < 5; i++) add({ kind: 'coin', lane, z: z + (ramp ? 2.8 : 0.6) + i * 0.8, h: t.h + 0.35, ride: t });
+  function addTruck(lane, z, kind, frac = rand(0.5, 0.58)) {
+    const ramp = kind === 'ramp';
+    const t = add({ kind: ramp ? 'ramp' : 'truck', model: kind, lane, z, len: 7.5, w: 0.9, h: ramp ? 1.0 : 1.2, frac, col: pick([C.purple, C.cyan, C.orange, C.pink]) });
+    if (ramp || Math.random() < 0.3) for (let i = 0; i < 5; i++) add({ kind: 'coin', lane, z: z + (ramp ? 2.9 : 0.6) + i * 0.8, h: t.h + 0.35, ride: t });
     return t;
   }
 
+  function coinLine(lane, z, n) { for (let i = 0; i < n; i++) add({ kind: 'coin', lane, z: z + i * 1.4, h: 0.35 }); }
+
   function spawnRow() {
-    const all = range(S.L, S.R);
-    const open = shuffle(all.filter((l) => S.t - (S.born[l] ?? -99) >= FRESH_T && laneClearAt(l, FAR - 10, FAR + 20)));
+    const w = S.dist + FAR;
+    const all = range(laneAt('L', w), laneAt('R', w));
+    const open = shuffle(all.filter((l) => laneClearAt(l, FAR - 10, FAR + 20)));
     if (!open.length) return;
-    const dens = Math.min(0.7, 0.28 + S.t / 220);
+    const dens = Math.min(0.7, 0.3 + S.t / 200);
     let n = 0;
     for (let i = 0; i < open.length; i++) if (Math.random() < dens) n++;
     if (n === 0 && Math.random() < 0.6) n = 1;
     n = Math.min(n, all.length - 1, open.length); // always leave a way through
     for (let i = 0; i < n; i++) {
-      const l = open[i];
-      if (Math.random() < 0.32) {
-        const t = addTruck(l, FAR, Math.random() < 0.45);
-        if (Math.random() < 0.3) addTruck(l, FAR + t.len + 1.2, Math.random() < 0.3, t.frac); // convoy
+      const l = open[i], r = Math.random();
+      if (r < 0.14) addTruck(l, FAR, 'ramp');
+      else if (r < 0.3) {
+        const t = addTruck(l, FAR, Math.random() < 0.3 ? 'tanker' : 'semi');
+        if (Math.random() < 0.25) addTruck(l, FAR + t.len + 1.2, 'semi', t.frac); // convoy
       } else addCar(l, FAR);
     }
     const rest = open.slice(n);
     if (rest.length) {
       const r = Math.random();
-      if (r < 0.4) coinLine(rest[0], FAR + 1, 6);
-      else if (r < 0.55 && S.t > 8) add({ kind: 'cones', lane: rest[0], z: FAR + 2, len: 0.5, w: 0.9, h: 0.4 });
+      if (r < 0.45) coinLine(rest[0], FAR + 1, 6);
+      else if (r < 0.55 && S.t > 10) add({ kind: 'cones', lane: rest[0], z: FAR + 2, len: 0.5, w: 0.9, h: 0.4 });
     }
   }
 
   function spawnPower() {
-    const lanes = shuffle(range(S.L, S.R)).filter((l) => laneClearAt(l, FAR - 4, FAR + 3));
+    const w = S.dist + FAR;
+    const lanes = shuffle(range(laneAt('L', w), laneAt('R', w))).filter((l) => laneClearAt(l, FAR - 4, FAR + 3));
     if (lanes.length) add({ kind: 'power', power: pick(Object.keys(POWERS)), lane: lanes[0], z: FAR + 1, h: 0.55 });
-  }
-
-  // Road closed across every current lane: pave a new one (or go nitro) to get through.
-  function spawnBlock() {
-    if (S.objs.some((o) => o.kind === 'barrier')) return;
-    for (let l = S.L; l <= S.R; l++) add({ kind: 'barrier', lane: l, z: FAR + 4, len: 0.6, w: 0.96, h: 1.7 });
-    S.sinceRow = -14;
   }
 
   function burst(x, z, h, n, color, spd = 3, life = 0.6) {
@@ -295,7 +338,7 @@
   function smash(o) {
     o.dead = true;
     for (const c of S.objs) if (c.ride === o) c.ride = null;
-    burst(o.lane, Math.max(o.z, 0.5), (o.h || 0.5) / 2, 18, (o.col && o.col[0]) || C.orange, 7, 0.8);
+    burst(o.lane, Math.max(o.z, 0.5), (o.h || 0.5) / 2, 18, o.col || C.orange, 7, 0.8);
     S.score += 25 * mult(); S.shake = Math.max(S.shake, 0.15); sfx.smash();
   }
 
@@ -303,22 +346,27 @@
 
   function collectCoin(o) {
     S.coins++; S.streak++; S.streakT = 0.6;
-    S.score += 10 * mult();
+    S.score += 10 * mult(); S.boost = Math.min(3, S.boost + 0.06);
     burst(o.lane, o.z, o.h, 4, C.yellow, 2, 0.35);
     sfx.coin();
   }
 
   function grantPower(kind, o) {
-    S.pw[kind] = POWERS[kind].dur;
+    if (kind === 'turbo') S.boost = 3; else S.pw[kind] = POWERS[kind].dur;
     toast(POWERS[kind].label, POWERS[kind].color);
     burst(o.lane, o.z, o.h, 14, POWERS[kind].color, 4, 0.6);
     sfx.power();
   }
 
-  function crash(o) {
-    S.mode = 'over'; S.overAt = performance.now(); S.shake = 0.45; S.flash = 0.35; S.arm = null;
+  function nearMiss() {
+    S.score += 30 * mult(); S.boost = Math.min(3, S.boost + 0.15);
+    toast('NEAR MISS +' + 30 * mult(), C.cyan); sfx.near();
+  }
+
+  function crash() {
+    S.mode = 'over'; S.overAt = performance.now(); S.shake = 0.45; S.flash = 0.35;
     for (const c of [C.pink, C.cyan, C.yellow]) burst(S.px, 0.3, S.y + 0.3, 14, c, 7, 1);
-    sfx.crash();
+    sfx.crash(); engine(false);
     const sc = Math.floor(S.score);
     if (sc > S.best) { S.best = sc; S.newBest = true; saveBest(sc); }
   }
@@ -328,10 +376,29 @@
     const v = S.objs.filter((o) => !o.dead && VEHICLE.has(o.kind)).sort((a, b) => a.z - b.z);
     for (let i = 0; i < v.length; i++) {
       for (let j = i + 1; j < v.length; j++) {
-        if (v[j].lane !== v[i].lane) continue;
+        if (Math.round(v[j].lane) !== Math.round(v[i].lane)) continue;
         if (v[j].z - (v[i].z + v[i].len) < 1.5 && v[i].frac > v[j].frac) v[i].frac = v[j].frac;
         break;
       }
+    }
+  }
+
+  // Traffic in an ending lane signals and merges; if it can't, it takes the exit.
+  function trafficMerges(dt) {
+    for (const side of ['L', 'R']) {
+      for (const c of S.road[side].ch) {
+        if (isOpening(side, c)) continue;
+        for (const o of S.objs) {
+          if (o.dead || !VEHICLE.has(o.kind) || o.mergeTo !== undefined || Math.round(o.lane) !== c.from) continue;
+          const gap = c.w - (S.dist + o.z + o.len);
+          if (gap < 16 && gap > -2 && !tryMerge(o, c.to) && gap < 3) poof(o);
+        }
+      }
+    }
+    for (const o of S.objs) {
+      if (o.mergeTo === undefined) continue;
+      o.lane = approach(o.lane, o.mergeTo, dt * 1.3);
+      if (o.lane === o.mergeTo) delete o.mergeTo;
     }
   }
 
@@ -350,21 +417,27 @@
   function step(h) {
     const dz = S.speed * h;
     S.dist += dz;
-    S.score += dz * mult() * 0.5;
+    S.score += dz * 0.5 * mult();
 
+    // If a boost carried you through a lane-end board, you merge automatically.
+    S.lane = clamp(S.lane, laneAt('L', S.dist), laneAt('R', S.dist));
     const diff = S.lane - S.px, mv = LANE_SPEED * h;
     S.px += Math.abs(diff) <= mv ? diff : Math.sign(diff) * mv;
 
-    for (const o of S.objs) o.z -= (S.speed - (o.ride ? o.ride.frac : o.frac) * S.base) * h;
+    for (const o of S.objs) {
+      o.z -= (S.speed - (o.ride ? o.ride.frac : o.frac) * S.base) * h;
+      if (o.ride) o.lane = o.ride.lane;
+    }
 
     S.sinceRow += dz;
     if (S.sinceRow >= S.gapNext) {
       S.sinceRow = 0;
       spawnRow();
-      S.gapNext = Math.max(9, 17 - S.base * 0.25) + rand(0, 4);
+      S.gapNext = Math.max(10, 17 - S.base * 0.2) + rand(0, 5);
     }
+    if ((S.nextLane -= dz) <= 0) { scheduleLaneChange(); S.nextLane = rand(260, 420); }
 
-    // Solid things: drive up onto what's low enough, crash into what isn't.
+    // Solid things: drive up onto what's low enough (ramps, roofs), crash into what isn't.
     let ground = 0, on = null;
     for (const o of S.objs) {
       if (o.dead || !SOLID.has(o.kind)) continue;
@@ -376,7 +449,7 @@
         if (S.pw.nitro > 0) { smash(o); continue; }
         if (S.invuln > 0) continue;
         if (S.pw.shield > 0) { S.pw.shield = 0; S.invuln = 1.2; smash(o); toast('SHIELD SAVED YOU', C.mint); continue; }
-        crash(o); return;
+        crash(); return;
       }
       if (top > ground) { ground = top; on = o; }
     }
@@ -386,25 +459,23 @@
       S.vy -= GRAVITY * h;
       S.y += S.vy * h;
       if (S.y <= ground) {
-        if (S.vy < -7) { sfx.land(); burst(S.px, -0.4, ground, 6, C.cyan, 2, 0.35); }
+        if (S.vy < -5) { sfx.land(); S.bounce = -0.06; burst(S.px, -0.4, ground, 6, C.cyan, 2, 0.35); }
         S.y = ground; S.vy = 0;
       }
     }
 
     for (const o of S.objs) {
-      if (o.dead || (o.kind !== 'coin' && o.kind !== 'power')) continue;
+      if (o.dead) continue;
+      if (VEHICLE.has(o.kind) && !o.passed && o.z + o.len < -HALF_LEN) {
+        o.passed = true;
+        if (Math.abs(o.lane - S.px) < 1.3 && S.speed > 10 && S.onObj !== o) nearMiss();
+        continue;
+      }
+      if (o.kind !== 'coin' && o.kind !== 'power') continue;
       if (Math.abs(o.z) > HALF_LEN + 0.25 || Math.abs(S.px - o.lane) > 0.6) continue;
       if (o.h < S.y - 0.25 || o.h > S.y + 0.95) continue;
       o.dead = true;
       if (o.kind === 'coin') collectCoin(o); else grantPower(o.power, o);
-    }
-
-    // Traffic can't drive through a closed road; it takes the exit instead.
-    for (const b of S.objs) {
-      if (b.kind !== 'barrier' || b.dead) continue;
-      for (const o of S.objs) {
-        if (!o.dead && o.kind !== 'barrier' && (o.frac > 0 || o.ride) && Math.round(o.lane) === b.lane && o.z < b.z + b.len && o.z + o.len > b.z - 0.6) poof(o);
-      }
     }
 
     S.objs = S.objs.filter((o) => !o.dead && o.z + o.len > NEAR - 2);
@@ -423,36 +494,49 @@
     S.anim += dt;
     S.shake = Math.max(0, S.shake - dt);
     S.flash = Math.max(0, S.flash - dt);
+    S.wobble = approach(S.wobble, 0, dt * 0.4);
+    S.bounce = approach(S.bounce, 0, dt * 0.4);
     if (S.toast && (S.toast.t -= dt) <= 0) S.toast = null;
     updateParts(dt);
 
-    const camT = S.mode === 'title' ? Math.sin(S.anim * 0.4) * 0.6 : S.px * 0.75 + ((S.L + S.R) / 2) * 0.25;
+    const mid = (laneAt('L', S.dist) + laneAt('R', S.dist)) / 2;
+    const camT = S.mode === 'title' ? Math.sin(S.anim * 0.4) * 0.6 : S.px * 0.75 + mid * 0.25;
     S.cam += (camT - S.cam) * Math.min(1, dt * 5);
-    S.eL = approach(S.eL, S.L - 0.5, dt * 6);
-    S.eR = approach(S.eR, S.R + 0.5, dt * 6);
+    S.D += ((S.boostT > 0 || S.pw.nitro > 0 ? 6.2 : 7) - S.D) * Math.min(1, dt * 4); // FOV kick while boosting
 
     if (S.mode === 'title') { S.dist += 9 * dt; return; }
     if (S.mode !== 'play') return;
     S.t += dt;
-    S.base = Math.min(MAX_SPEED, START_SPEED + S.t * ACCEL);
-    S.speed += (S.base * (S.pw.nitro > 0 ? NITRO_SPEED : 1) - S.speed) * Math.min(1, dt * 3);
+    S.base = baseSpeed(S.t);
+    const target = S.base * (S.boostT > 0 ? BOOST_MULT : 1) * (S.pw.nitro > 0 ? NITRO_MULT : 1) * (S.brakeT > 0 ? BRAKE_MULT : 1);
+    S.speed += (target - S.speed) * Math.min(1, dt * (target > S.speed ? 2.5 : 4));
+    S.boostT = Math.max(0, S.boostT - dt);
+    S.brakeT = Math.max(0, S.brakeT - dt);
+    S.hornT = Math.max(0, S.hornT - dt);
+    S.boost = Math.min(3, S.boost + dt * 0.04);
 
-    if (S.arm && (S.armT -= dt) <= 0) S.arm = null;
     S.invuln = Math.max(0, S.invuln - dt);
     for (const k in S.pw) {
       if (S.pw[k] > 0 && (S.pw[k] -= dt) <= 0) { S.pw[k] = 0; if (k === 'nitro') S.invuln = Math.max(S.invuln, 1); }
     }
     if ((S.streakT -= dt) <= 0) S.streak = 0;
     if ((S.nextPower -= dt) <= 0) { spawnPower(); S.nextPower = rand(9, 15); }
-    if ((S.nextBlock -= dt) <= 0) { spawnBlock(); S.nextBlock = rand(28, 42); }
     magnet(dt);
     convoy();
+    trafficMerges(dt);
+    pruneRoad();
 
     // Sub-step so fast speeds can't tunnel through anything.
     const steps = Math.max(1, Math.ceil((S.speed * dt) / 0.3));
     for (let i = 0; i < steps && S.mode === 'play'; i++) step(dt / steps);
+    if (S.mode !== 'play') return;
 
-    if (S.mode === 'play' && S.pw.nitro > 0) burst(S.px + rand(-0.25, 0.25), -0.9, S.y + 0.2, 1, pick([C.orange, C.yellow]), 1.5, 0.3);
+    engine(true);
+    if (eng) eng.o.frequency.setTargetAtTime(38 + S.speed * 2.6, actx.currentTime, 0.1);
+    S.bounce += Math.sin(S.anim * 31) * 0.0015 * (S.speed / 20); // road buzz
+    const steerAmt = S.lane - S.px;
+    if (Math.abs(steerAmt) > 0.4 && S.speed > 18 && grounded()) burst(S.px - 0.34 * Math.sign(steerAmt), -0.6, 0.05, 1, '#8f86b8', 1, 0.4);
+    if (S.boostT > 0 || S.pw.nitro > 0) burst(S.px + rand(-0.2, 0.2), -0.9, S.y + 0.1, 1, pick([C.cyan, C.pink, C.text]), 1.5, 0.25);
   }
 
   // ---------- drawing: pre-baked sky ----------
@@ -465,6 +549,14 @@
     g.fillStyle = grd; g.beginPath(); g.arc(SUN_R + 2, SUN_R + 1, SUN_R, Math.PI, 0); g.closePath(); g.fill();
     g.globalCompositeOperation = 'destination-out';
     for (let i = 0; i < 7; i++) g.fillRect(0, SUN_R * 0.45 + i * (SUN_R * 0.55 / 7), c.width, 1.5 + i * 1.4);
+    return c;
+  })();
+
+  const glowImg = (() => {
+    const c = document.createElement('canvas'); c.width = W; c.height = 50;
+    const g = c.getContext('2d'), grd = g.createLinearGradient(0, 50, 0, 0);
+    grd.addColorStop(0, 'rgba(255,79,216,0.35)'); grd.addColorStop(1, 'rgba(255,79,216,0)');
+    g.fillStyle = grd; g.fillRect(0, 0, W, 50);
     return c;
   })();
 
@@ -489,6 +581,26 @@
     return c;
   })();
 
+  const CITY_W = 380, CITY_H = 64;
+  const cityImg = (() => {
+    const c = document.createElement('canvas'); c.width = CITY_W; c.height = CITY_H;
+    const g = c.getContext('2d');
+    for (let x = 4; x < CITY_W - 20;) {
+      const bw = rand(14, 32), mid = 1 - Math.abs(x - CITY_W / 2) / (CITY_W / 2);
+      const bh = rand(12, 26) + mid * rand(10, 36);
+      g.fillStyle = '#000'; g.fillRect(x, CITY_H - bh, bw, bh);
+      g.strokeStyle = C.purple; g.lineWidth = 1.5; g.strokeRect(x + 0.5, CITY_H - bh + 0.5, bw - 1, bh);
+      for (let wy = CITY_H - bh + 5; wy < CITY_H - 4; wy += 6) {
+        for (let wx = x + 3; wx < x + bw - 4; wx += 5) {
+          if (Math.random() < 0.28) { g.fillStyle = Math.random() < 0.6 ? C.cyan : C.pink; g.fillRect(wx, wy, 2, 2); }
+        }
+      }
+      if (bh > 45) { g.strokeStyle = C.red; g.beginPath(); g.moveTo(x + bw / 2, CITY_H - bh); g.lineTo(x + bw / 2, CITY_H - bh - 8); g.stroke(); }
+      x += bw + rand(1, 5);
+    }
+    return c;
+  })();
+
   const STARS = Array.from({ length: 45 }, () => ({ x: rand(0, W), y: rand(8, HORIZON - 40), p: rand(0, 6) }));
 
   // ---------- drawing helpers ----------
@@ -503,18 +615,47 @@
     for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
     ctx.closePath(); if (fill) ctx.fill(); ctx.stroke();
   }
-  const P = (x, z, h) => [X(x, z), Y(z, h)];
 
-  // A box seen from behind: the side facing the camera, the roof, then the rear.
-  function box(x, w, z0, z1, h0, h1, stroke, fill, lw) {
-    z0 = Math.max(z0, NEAR);
-    if (z1 <= z0) return;
-    const xl = x - w / 2, xr = x + w / 2;
+  // A box seen from behind, optionally yawed (front centre xF ≠ rear centre xR).
+  // Draws whichever side faces the camera, then the roof, then the rear.
+  function box(xR, xF, w, z0, z1, h0, h1, stroke, fill, lw) {
+    if (z0 < NEAR) { if (z1 <= NEAR) return; xR += ((xF - xR) * (NEAR - z0)) / (z1 - z0); z0 = NEAR; }
+    const hw = w / 2, dz = z1 - z0, dx = xF - xR, cz = -S.D;
     ctx.strokeStyle = stroke; ctx.fillStyle = fill; ctx.lineWidth = lw;
-    if (xr < S.cam) poly([P(xr, z0, h0), P(xr, z1, h0), P(xr, z1, h1), P(xr, z0, h1)]);
-    else if (xl > S.cam) poly([P(xl, z0, h0), P(xl, z1, h0), P(xl, z1, h1), P(xl, z0, h1)]);
-    poly([P(xl, z0, h1), P(xr, z0, h1), P(xr, z1, h1), P(xl, z1, h1)]);
-    poly([P(xl, z0, h0), P(xr, z0, h0), P(xr, z0, h1), P(xl, z0, h1)]);
+    if ((S.cam - (xR + hw)) * dz - (cz - z0) * dx > 0) poly([P(xR + hw, z0, h0), P(xF + hw, z1, h0), P(xF + hw, z1, h1), P(xR + hw, z0, h1)]);
+    if ((xR - hw - S.cam) * dz + (cz - z0) * dx > 0) poly([P(xR - hw, z0, h0), P(xF - hw, z1, h0), P(xF - hw, z1, h1), P(xR - hw, z0, h1)]);
+    poly([P(xR - hw, z0, h1), P(xR + hw, z0, h1), P(xF + hw, z1, h1), P(xF - hw, z1, h1)]);
+    poly([P(xR - hw, z0, h0), P(xR + hw, z0, h0), P(xR + hw, z0, h1), P(xR - hw, z0, h1)]);
+  }
+
+  // Local 2D frame on a rear face: a = lanes across from centre, b = height above h0.
+  function frame(x, z, h0) { const s = scaleAt(z); return { s, cx: X(x, z), by: Y(z, h0), U: LANE_PX * s, V: UNIT_PX * s }; }
+  const fx = (f, a) => f.cx + a * f.U, fy = (f, b) => f.by - b * f.V;
+  function frect(f, a0, b0, a1, b1, fill, stroke) {
+    const x = fx(f, a0), y = fy(f, b1), w = (a1 - a0) * f.U, h = (b1 - b0) * f.V;
+    if (fill) { ctx.fillStyle = fill; ctx.fillRect(x, y, w, h); }
+    if (stroke) { ctx.strokeStyle = stroke; ctx.strokeRect(x, y, w, h); }
+  }
+  function fcircle(f, a, b, r, fill, stroke) {
+    ctx.beginPath(); ctx.arc(fx(f, a), fy(f, b), Math.max(1, r * f.U), 0, Math.PI * 2);
+    if (fill) { ctx.fillStyle = fill; ctx.fill(); }
+    if (stroke) { ctx.strokeStyle = stroke; ctx.stroke(); }
+  }
+  function fline(f, a0, b0, a1, b1) { line(fx(f, a0), fy(f, b0), fx(f, a1), fy(f, b1)); }
+  function fpoly(f, pts, fill, stroke) {
+    ctx.beginPath(); ctx.moveTo(fx(f, pts[0][0]), fy(f, pts[0][1]));
+    for (let i = 1; i < pts.length; i++) ctx.lineTo(fx(f, pts[i][0]), fy(f, pts[i][1]));
+    ctx.closePath();
+    if (fill) { ctx.fillStyle = fill; ctx.fill(); }
+    if (stroke) { ctx.strokeStyle = stroke; ctx.stroke(); }
+  }
+  function tyres(f, hw) {
+    for (const a of [-hw + 0.06, hw - 0.2]) frect(f, a, 0, a + 0.14, 0.15, '#040407', '#3a3550');
+  }
+  function blinker(f, o, b) {
+    if (o.mergeTo === undefined || Math.sin(S.anim * 14) < 0) return;
+    const side = Math.sign(o.mergeTo - o.lane);
+    fcircle(f, side * (o.w / 2 - 0.05), b, 0.05, C.orange);
   }
 
   // ---------- scenery ----------
@@ -526,8 +667,10 @@
     ctx.globalAlpha = 0.6;
     ctx.drawImage(sunImg, CX - S.cam * 6 - SUN_R - 2, HORIZON - SUN_R - 1);
     ctx.globalAlpha = 1;
+    ctx.drawImage(glowImg, 0, HORIZON - 50);
     const ox = -(((S.cam * 14) % MT_W) + MT_W) % MT_W;
     for (let x = ox - MT_W; x < W; x += MT_W) ctx.drawImage(mtImg, x, HORIZON - MT_H);
+    ctx.drawImage(cityImg, CX - CITY_W / 2 - S.cam * 9, HORIZON - CITY_H);
     ctx.strokeStyle = C.pink; ctx.lineWidth = 2; ctx.globalAlpha = 0.8; line(0, HORIZON, W, HORIZON);
     ctx.globalAlpha = 1;
   }
@@ -549,45 +692,38 @@
   }
 
   function drawRoad() {
-    const zf = FAR + 8;
+    const zf = FAR + 8, zs = [], eL = [], eR = [];
+    for (let z = NEAR; z <= zf; z += 2) { zs.push(z); eL.push(edgeAt('L', S.dist + z)); eR.push(edgeAt('R', S.dist + z)); }
+    const n = zs.length;
+
     ctx.fillStyle = C.road; ctx.globalAlpha = 0.95;
     ctx.beginPath();
-    ctx.moveTo(X(S.eL, NEAR), Y(NEAR)); ctx.lineTo(X(S.eR, NEAR), Y(NEAR)); ctx.lineTo(X(S.eR, zf), Y(zf)); ctx.lineTo(X(S.eL, zf), Y(zf));
+    for (let i = 0; i < n; i++) ctx.lineTo(X(eL[i], zs[i]), Y(zs[i]));
+    for (let i = n - 1; i >= 0; i--) ctx.lineTo(X(eR[i], zs[i]), Y(zs[i]));
     ctx.closePath(); ctx.fill();
 
-    // Freshly paved lanes shimmer while they're traffic-free.
-    for (let l = S.L; l <= S.R; l++) {
-      const age = S.t - (S.born[l] ?? -99);
-      if (age >= FRESH_T || S.mode === 'title') continue;
-      const k = 1 - age / FRESH_T;
-      ctx.globalAlpha = 0.18 * k; ctx.fillStyle = C.mint;
-      ctx.beginPath();
-      ctx.moveTo(X(l - 0.5, NEAR), Y(NEAR)); ctx.lineTo(X(l + 0.5, NEAR), Y(NEAR)); ctx.lineTo(X(l + 0.5, zf), Y(zf)); ctx.lineTo(X(l - 0.5, zf), Y(zf));
-      ctx.closePath(); ctx.fill();
-      const sz = age * 70; // sweep line racing to the horizon
-      if (sz < zf) { ctx.globalAlpha = k; ctx.strokeStyle = C.mint; ctx.lineWidth = 4; line(X(l - 0.5, sz), Y(sz), X(l + 0.5, sz), Y(sz)); }
-    }
-
-    // Rumble strips.
+    // Rumble strips hugging the (possibly tapering) edges.
     ctx.globalAlpha = 0.7; ctx.fillStyle = C.pink;
     ctx.beginPath();
     for (let z = -(S.dist % 3); z < zf; z += 3) {
       const z0 = Math.max(z, NEAR), z1 = z + 1.5;
       if (z1 <= NEAR) continue;
-      for (const [a, b] of [[S.eL, S.eL + 0.1], [S.eR - 0.1, S.eR]]) {
-        ctx.moveTo(X(a, z0), Y(z0)); ctx.lineTo(X(b, z0), Y(z0)); ctx.lineTo(X(b, z1), Y(z1)); ctx.lineTo(X(a, z1), Y(z1)); ctx.closePath();
+      for (const side of ['L', 'R']) {
+        const d = -dirOf(side) * 0.1, a0 = edgeAt(side, S.dist + z0), a1 = edgeAt(side, S.dist + z1);
+        ctx.moveTo(X(a0, z0), Y(z0)); ctx.lineTo(X(a0 + d, z0), Y(z0)); ctx.lineTo(X(a1 + d, z1), Y(z1)); ctx.lineTo(X(a1, z1), Y(z1)); ctx.closePath();
       }
     }
     ctx.fill();
 
-    // Dashed lane dividers.
+    // Dashed lane dividers, only where both neighbouring lanes are full width.
+    let lo = Infinity, hi = -Infinity;
+    for (let i = 0; i < n; i++) { lo = Math.min(lo, eL[i]); hi = Math.max(hi, eR[i]); }
     ctx.globalAlpha = 0.9; ctx.strokeStyle = C.cyan; ctx.lineWidth = 3;
     ctx.beginPath();
-    for (let l = S.L; l < S.R; l++) {
-      const x = l + 0.5;
+    for (let x = Math.ceil(lo) + 0.5; x < hi - 0.5; x += 1) {
       for (let z = -(S.dist % 5); z < zf; z += 5) {
-        const z0 = Math.max(z, NEAR), z1 = z + 2.2;
-        if (z1 <= NEAR) continue;
+        const z0 = Math.max(z, NEAR), z1 = z + 2.2, wm = S.dist + (z0 + z1) / 2;
+        if (z1 <= NEAR || edgeAt('L', wm) > x - 0.95 || edgeAt('R', wm) < x + 0.95) continue;
         ctx.moveTo(X(x, z0), Y(z0)); ctx.lineTo(X(x, z1), Y(z1));
       }
     }
@@ -596,14 +732,16 @@
     // Glowing edges.
     for (const [lw, a] of [[9, 0.25], [3, 1]]) {
       ctx.globalAlpha = a; ctx.strokeStyle = C.pink; ctx.lineWidth = lw;
-      for (const x of [S.eL, S.eR]) line(X(x, NEAR), Y(NEAR), X(x, zf), Y(zf));
+      for (const e of [eL, eR]) {
+        ctx.beginPath();
+        for (let i = 0; i < n; i++) ctx.lineTo(X(e[i], zs[i]), Y(zs[i]));
+        ctx.stroke();
+      }
     }
     ctx.globalAlpha = 1;
   }
 
-  function drawPalm(x, z) {
-    const a = clamp((FAR + 6 - z) / 12, 0, 1);
-    if (a <= 0) return;
+  function drawPalm(x, z, a) {
     const s = scaleAt(z), bx = X(x, z), by = Y(z), u = UNIT_PX * s;
     const lean = x < S.cam ? -1 : 1;
     const tx = bx + lean * 0.35 * u, ty = by - 2.6 * u;
@@ -619,15 +757,159 @@
     ctx.stroke();
   }
 
-  function drawPalms() {
+  function drawLamp(x, z, a, toward) {
+    const s = scaleAt(z), bx = X(x, z), by = Y(z), u = UNIT_PX * s, top = by - 1.9 * u, hx = bx + toward * 0.8 * LANE_PX * s;
+    ctx.globalAlpha = a * 0.75;
+    ctx.strokeStyle = C.chrome; ctx.lineWidth = Math.max(1.5, 4 * s);
+    ctx.beginPath(); ctx.moveTo(bx, by); ctx.lineTo(bx, top); ctx.quadraticCurveTo(bx, top - 0.2 * u, hx, top - 0.15 * u); ctx.stroke();
+    ctx.fillStyle = C.pink; ctx.fillRect(hx - 12 * s, top - 0.15 * u, 24 * s, 7 * s);
+    ctx.globalAlpha = a * 0.3; ctx.fillRect(hx - 22 * s, top - 0.15 * u - 4 * s, 44 * s, 15 * s);
+  }
+
+  function drawRoadside() {
     const sp = 10;
     for (let z = FAR + 6 - ((S.dist + FAR + 6) % sp); z > NEAR + 1; z -= sp) {
-      drawPalm(S.eL - 1.3, z); drawPalm(S.eR + 1.3, z);
+      const a = clamp((FAR + 6 - z) / 12, 0, 1);
+      if (a <= 0) continue;
+      const w = S.dist + z, lamp = Math.round(w / sp) % 2 === 0;
+      const xl = edgeAt('L', w) - 1.3, xr = edgeAt('R', w) + 1.3;
+      if (lamp) { drawLamp(xl, z, a, 1); drawLamp(xr, z, a, -1); } else { drawPalm(xl, z, a); drawPalm(xr, z, a); }
     }
     ctx.globalAlpha = 1;
   }
 
-  // ---------- things on the road ----------
+  // ---------- vehicles ----------
+  function drawCar(o) {
+    const M = MODELS[o.model], x = o.lane, z0 = o.z, z1 = o.z + o.len, col = o.col;
+    const f = frame(x, Math.max(z0, NEAR), 0), lw = Math.max(1.2, 2.5 * f.s), hw = o.w / 2;
+    const detail = z0 > NEAR && f.s > 0.2;
+    if (detail) tyres(f, hw);
+    if (o.model === 'van') box(x, x, o.w, z0, z1, 0.12, o.h, col, C.body, lw);
+    else if (o.model === 'wedge') { box(x, x, o.w, z0, z1, 0.1, 0.32, col, C.body, lw); box(x, x, 0.5, z0 + 0.6, z1 - 0.4, 0.32, o.h, col, C.body, lw); }
+    else { box(x, x, o.w, z0, z1, 0.1, 0.4, col, C.body, lw); box(x, x, 0.6, z0 + 0.45, z1 - 0.45, 0.4, o.h, col, C.body, lw); }
+    if (!detail) { frect(f, -hw + 0.04, 0.24, -hw + 0.2, 0.3, C.tail); frect(f, hw - 0.2, 0.24, hw - 0.04, 0.3, C.tail); return; }
+    ctx.lineWidth = Math.max(1, 2 * f.s);
+    const fc = frame(x, z0 + (o.model === 'wedge' ? 0.6 : 0.45), 0); // cabin rear face
+    switch (o.model) {
+      case 'wedge': // Countach: big wing, quad lights, centre vents
+        ctx.strokeStyle = col; fline(f, -0.26, 0.32, -0.26, 0.58); fline(f, 0.26, 0.32, 0.26, 0.58);
+        fpoly(f, [[-0.44, 0.57], [0.44, 0.57], [0.42, 0.64], [-0.42, 0.64]], C.body, col);
+        for (const s of [-1, 1]) { frect(f, s > 0 ? 0.1 : -0.36, 0.18, s > 0 ? 0.22 : -0.24, 0.27, C.tail); frect(f, s > 0 ? 0.24 : -0.22, 0.18, s > 0 ? 0.36 : -0.1, 0.27, C.tail); }
+        ctx.strokeStyle = '#3a3550'; for (const a of [-0.05, 0, 0.05]) fline(f, a, 0.14, a, 0.28);
+        fpoly(fc, [[-0.2, 0.34], [0.2, 0.34], [0.16, 0.46], [-0.16, 0.46]], C.glass, C.cyan);
+        break;
+      case 'delorean': // louvred back window, black grille band
+        fpoly(fc, [[-0.26, 0.42], [0.26, 0.42], [0.22, 0.58], [-0.22, 0.58]], C.glass, col);
+        ctx.strokeStyle = col; for (const b of [0.45, 0.49, 0.53]) fline(fc, -0.23, b, 0.23, b);
+        frect(f, -0.37, 0.2, 0.37, 0.32, '#000', col);
+        frect(f, -0.37, 0.22, -0.23, 0.3, C.tail); frect(f, 0.23, 0.22, 0.37, 0.3, C.tail);
+        ctx.strokeStyle = '#5a5f70'; for (let a = -0.18; a <= 0.19; a += 0.06) fline(f, a, 0.21, a, 0.31);
+        break;
+      case 'muscle': // twin stripes, round quad lights, ducktail
+        frect(f, -0.1, 0.1, -0.04, 0.4, C.text); frect(f, 0.04, 0.1, 0.1, 0.4, C.text);
+        frect(fc, -0.1, 0.4, -0.04, o.h, C.text); frect(fc, 0.04, 0.4, 0.1, o.h, C.text);
+        for (const a of [-0.32, -0.2, 0.2, 0.32]) fcircle(f, a, 0.28, 0.045, C.tail);
+        fpoly(f, [[-0.41, 0.4], [0.41, 0.4], [0.37, 0.46], [-0.37, 0.46]], C.body, col);
+        fpoly(fc, [[-0.26, 0.44], [-0.13, 0.44], [-0.13, 0.58], [-0.22, 0.58]], C.glass, C.cyan);
+        fpoly(fc, [[0.13, 0.44], [0.26, 0.44], [0.22, 0.58], [0.13, 0.58]], C.glass, C.cyan);
+        break;
+      case 'cop': { // light bar strobes red / blue
+        fpoly(fc, [[-0.26, 0.42], [0.26, 0.42], [0.22, 0.58], [-0.22, 0.58]], C.glass, C.cyan);
+        frect(f, -0.37, 0.24, -0.22, 0.32, C.tail); frect(f, 0.22, 0.24, 0.37, 0.32, C.tail);
+        frect(f, -0.37, 0.14, 0.37, 0.18, C.text);
+        const fb = frame(x, z0 + 0.9, 0), on = Math.sin(S.anim * 16) > 0;
+        frect(fb, -0.24, o.h, 0, o.h + 0.07, on ? C.red : '#2a0a10');
+        frect(fb, 0, o.h, 0.24, o.h + 0.07, on ? '#1a1a40' : '#3d6bff');
+        ctx.globalAlpha *= 0.35; frect(fb, on ? -0.34 : 0, o.h - 0.03, on ? 0 : 0.34, o.h + 0.12, on ? C.red : '#3d6bff'); ctx.globalAlpha /= 0.35;
+        break;
+      }
+      case 'van': // twin back windows, sunset stripes
+        frect(f, -0.34, 0.58, -0.04, 0.86, C.glass, C.cyan); frect(f, 0.04, 0.58, 0.34, 0.86, C.glass, C.cyan);
+        frect(f, -0.4, 0.44, 0.4, 0.48, C.yellow); frect(f, -0.4, 0.38, 0.4, 0.42, C.orange); frect(f, -0.4, 0.32, 0.4, 0.36, C.pink);
+        frect(f, -0.4, 0.14, -0.34, 0.3, C.tail); frect(f, 0.34, 0.14, 0.4, 0.3, C.tail);
+        ctx.strokeStyle = col; fline(f, 0, 0.14, 0, 0.9);
+        break;
+      default: // hatch: wide lights joined by a red pinstripe
+        fpoly(fc, [[-0.27, 0.42], [0.27, 0.42], [0.2, 0.58], [-0.2, 0.58]], C.glass, C.cyan);
+        ctx.strokeStyle = C.cyan; fline(fc, 0, 0.43, -0.16, 0.54);
+        frect(f, -0.35, 0.24, -0.17, 0.32, C.tail); frect(f, 0.17, 0.24, 0.35, 0.32, C.tail); frect(f, -0.17, 0.27, 0.17, 0.29, C.tail);
+    }
+    blinker(f, o, 0.3);
+  }
+
+  function drawTruck(o) {
+    const x = o.lane, z0 = o.z, z1 = o.z + o.len, col = o.col;
+    const f = frame(x, Math.max(z0, NEAR), 0), lw = Math.max(1.2, 2.5 * f.s), hw = o.w / 2;
+    const detail = z0 > NEAR && f.s > 0.2;
+    // Cab at the far end, with chrome stacks poking above the load.
+    box(x, x, 0.84, z1 - 1.4, z1, 0.1, 1.0, C.cyan, C.body, lw);
+    const fs = frame(x, z1 - 1.3, 0);
+    ctx.strokeStyle = C.chrome; ctx.lineWidth = Math.max(1.5, 4 * fs.s);
+    fline(fs, -0.36, 0.9, -0.36, 1.45); fline(fs, 0.36, 0.9, 0.36, 1.45);
+    if (detail) tyres(f, hw);
+    if (o.model === 'tanker') {
+      // A ribbed cylinder: draw its hoops far → near.
+      ctx.lineWidth = lw;
+      for (let k = 4; k >= 0; k--) {
+        const zz = z0 + ((o.len - 1.5) * k) / 4;
+        if (zz < NEAR) continue;
+        const ff = frame(x, zz, 0);
+        ctx.fillStyle = C.body; ctx.strokeStyle = col;
+        ctx.beginPath(); ctx.ellipse(ff.cx, fy(ff, 0.66), hw * ff.U, 0.42 * ff.V, 0, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+      }
+      if (detail) {
+        ctx.strokeStyle = C.chrome; ctx.lineWidth = Math.max(1, 2 * f.s);
+        fline(f, -0.08, 0.3, -0.08, 1.02); fline(f, 0.08, 0.3, 0.08, 1.02);
+        for (let b = 0.38; b < 1; b += 0.12) fline(f, -0.08, b, 0.08, b);
+        const dx = fx(f, 0.26), dy = fy(f, 0.7), r = 0.08 * f.U;
+        ctx.fillStyle = C.orange; ctx.beginPath(); ctx.moveTo(dx, dy - r); ctx.lineTo(dx + r, dy); ctx.lineTo(dx, dy + r); ctx.lineTo(dx - r, dy); ctx.closePath(); ctx.fill();
+      }
+    } else if (o.model === 'semi') {
+      box(x, x, o.w, z0, z1 - 1.5, 0.28, o.h, col, C.body, lw);
+      // Racing stripes down whichever side we can see.
+      const sx = x + (x < S.cam ? hw : -hw);
+      if (Math.abs(x - S.cam) > hw && z0 > NEAR) {
+        ctx.lineWidth = Math.max(1, 3 * f.s);
+        for (const [hh, c] of [[0.6, C.pink], [0.7, C.cyan]]) { ctx.strokeStyle = c; line(X(sx, z0), Y(z0, hh), X(sx, z1 - 1.5), Y(z1 - 1.5, hh)); }
+      }
+      if (detail) {
+        ctx.lineWidth = Math.max(1, 2 * f.s); ctx.strokeStyle = col; fline(f, 0, 0.3, 0, 1.18);
+        ctx.strokeStyle = C.chrome; for (const a of [-0.3, -0.1, 0.1, 0.3]) fline(f, a, 0.34, a, 1.12);
+        for (let i = 0; i < 8; i++) frect(f, -0.44 + i * 0.11, 0.3, -0.34 + i * 0.11, 0.34, i % 2 ? C.text : C.red);
+        // Sunset logo on the doors.
+        ctx.save(); ctx.beginPath(); ctx.rect(fx(f, -0.2), fy(f, 0.98), 0.4 * f.U, 0.22 * f.V); ctx.clip();
+        fcircle(f, 0, 0.76, 0.17, C.pink);
+        ctx.strokeStyle = C.body; ctx.lineWidth = Math.max(1, 3 * f.s); for (const b of [0.8, 0.85, 0.9]) fline(f, -0.2, b, 0.2, b);
+        ctx.restore();
+        if (f.s > 0.45) { ctx.font = `800 ${Math.round(0.1 * f.V)}px system-ui, Roboto, sans-serif`; ctx.fillStyle = col; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('VAPOR', f.cx, fy(f, 0.6)); }
+      }
+    } else {
+      // Car carrier: a ramp to drive up and a flat deck to ride.
+      box(x, x, o.w, z0 + 2.4, z1 - 1.5, 0.75, o.h, col, C.body, lw);
+      const r0 = Math.max(z0, NEAR), rh = (o.h * (r0 - z0)) / 2.4;
+      if (r0 < z0 + 2.4) {
+        ctx.strokeStyle = C.yellow; ctx.fillStyle = '#1d1604'; ctx.lineWidth = lw;
+        poly([P(x - hw, r0, rh), P(x + hw, r0, rh), P(x + hw, z0 + 2.4, o.h), P(x - hw, z0 + 2.4, o.h)]);
+        ctx.beginPath();
+        for (let k = 0.3; k < 2.4; k += 0.6) {
+          const zz = z0 + k;
+          if (zz < NEAR) continue;
+          const hh = (o.h * k) / 2.4;
+          ctx.moveTo(X(x - o.w * 0.3, zz), Y(zz, hh)); ctx.lineTo(X(x, zz + 0.25), Y(zz + 0.25, hh + 0.1)); ctx.lineTo(X(x + o.w * 0.3, zz), Y(zz, hh));
+        }
+        ctx.stroke();
+      }
+      ctx.strokeStyle = col; ctx.lineWidth = Math.max(1, 2 * f.s);
+      for (const s of [-1, 1]) {
+        const ex = x + s * hw, za = Math.max(z0 + 2.4, NEAR), zb = z1 - 1.5;
+        line(X(ex, za), Y(za, o.h + 0.15), X(ex, zb), Y(zb, o.h + 0.15));
+        for (let zz = za; zz <= zb; zz += 1) line(X(ex, zz), Y(zz, o.h), X(ex, zz), Y(zz, o.h + 0.15));
+      }
+    }
+    if (detail) { frect(f, -hw + 0.03, 0.18, -hw + 0.16, 0.25, C.tail); frect(f, hw - 0.16, 0.18, hw - 0.03, 0.25, C.tail); blinker(f, o, 0.22); }
+  }
+
+  // ---------- other road things ----------
   function drawPowerIcon(kind, x, y, r, color) {
     ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineWidth = Math.max(2, r * 0.18);
     ctx.beginPath();
@@ -638,7 +920,7 @@
       poly([[x, y - r * 0.65], [x + r * 0.55, y - r * 0.4], [x + r * 0.45, y + r * 0.25], [x, y + r * 0.65], [x - r * 0.45, y + r * 0.25], [x - r * 0.55, y - r * 0.4]], false);
     } else if (kind === 'nitro') {
       poly([[x + r * 0.15, y - r * 0.7], [x - r * 0.4, y + r * 0.1], [x, y + r * 0.1], [x - r * 0.15, y + r * 0.7], [x + r * 0.4, y - r * 0.1], [x, y - r * 0.1]], false);
-    } else if (kind === 'hydro') {
+    } else if (kind === 'turbo') {
       for (const dy of [-0.25, 0.25]) { ctx.moveTo(x - r * 0.45, y + (dy + 0.2) * r); ctx.lineTo(x, y + (dy - 0.2) * r); ctx.lineTo(x + r * 0.45, y + (dy + 0.2) * r); }
       ctx.stroke();
     } else {
@@ -647,54 +929,13 @@
     }
   }
 
-  function drawCar(o) {
-    const [st, fi] = o.col, z0 = o.z, s = scaleAt(Math.max(z0, NEAR)), x = o.lane;
-    const lw = Math.max(1.5, 3 * s);
-    box(x, o.w, z0 + 0.5, z0 + 1.35, 0.42, o.h, st, fi, lw);          // cabin
-    box(x, o.w, z0, z0 + o.len, 0.1, 0.42, st, fi, lw);               // body
-    const yl = Y(Math.max(z0, NEAR), 0.28), th = 0.07 * UNIT_PX * s;
-    ctx.fillStyle = C.tail;
-    ctx.fillRect(X(x - o.w / 2 + 0.05, z0), yl, 0.18 * LANE_PX * s, th);
-    ctx.fillRect(X(x + o.w / 2 - 0.23, z0), yl, 0.18 * LANE_PX * s, th);
-  }
-
-  function drawTruck(o) {
-    const [st, fi] = o.col, z0 = o.z, z1 = o.z + o.len, x = o.lane, s = scaleAt(Math.max(z0, NEAR));
-    const lw = Math.max(1.5, 3 * s);
-    box(x, o.w * 0.92, z1 - 1.2, z1, 0.1, 0.95, C.cyan, '#061820', lw);  // cab (far end)
-    if (o.kind === 'truck') {
-      box(x, o.w, z0, z1 - 1.3, 0.25, o.h, st, fi, lw);
-      if (z0 > NEAR) {
-        // Rear doors and a racing stripe down the visible side.
-        ctx.strokeStyle = st; ctx.lineWidth = Math.max(1, 2 * s);
-        line(X(x, z0), Y(z0, 0.3), X(x, z0), Y(z0, o.h - 0.05));
-        ctx.strokeStyle = C.pink;
-        const sx = x + (x < S.cam ? o.w / 2 : -o.w / 2);
-        if (Math.abs(x - S.cam) > o.w / 2) line(X(sx, z0), Y(z0, o.h * 0.65), X(sx, z1 - 1.3), Y(z1 - 1.3, o.h * 0.65));
-      }
-    } else {
-      // Car carrier: a ramp to drive up and a flat deck to ride.
-      box(x, o.w, z0 + 2.4, z1 - 1.3, 0.75, o.h, st, fi, lw);
-      const r0 = Math.max(z0, NEAR), rh = o.h * (r0 - z0) / 2.4;
-      if (r0 < z0 + 2.4) {
-        ctx.strokeStyle = C.yellow; ctx.fillStyle = '#1d1604'; ctx.lineWidth = lw;
-        poly([P(x - o.w / 2, r0, rh), P(x + o.w / 2, r0, rh), P(x + o.w / 2, z0 + 2.4, o.h), P(x - o.w / 2, z0 + 2.4, o.h)]);
-        ctx.beginPath();
-        for (let k = 0.3; k < 2.4; k += 0.6) {
-          const zz = z0 + k;
-          if (zz < NEAR) continue;
-          const hh = (o.h * k) / 2.4;
-          ctx.moveTo(X(x - o.w * 0.3, zz), Y(zz, hh)); ctx.lineTo(X(x, zz + 0.25), Y(zz + 0.25, hh + 0.1)); ctx.lineTo(X(x + o.w * 0.3, zz), Y(zz, hh));
-        }
-        ctx.stroke();
-      }
+  function chevronRow(cx, cy, dir, n, size, gap) {
+    ctx.beginPath();
+    for (let i = 0; i < n; i++) {
+      const x = cx + (i - (n - 1) / 2) * gap;
+      ctx.moveTo(x - dir * size * 0.5, cy - size); ctx.lineTo(x + dir * size * 0.5, cy); ctx.lineTo(x - dir * size * 0.5, cy + size);
     }
-    if (z0 > NEAR) {
-      ctx.fillStyle = C.tail;
-      const yl = Y(z0, 0.18), th = 0.06 * UNIT_PX * s;
-      ctx.fillRect(X(x - o.w / 2 + 0.04, z0), yl, 0.14 * LANE_PX * s, th);
-      ctx.fillRect(X(x + o.w / 2 - 0.18, z0), yl, 0.14 * LANE_PX * s, th);
-    }
+    ctx.stroke();
   }
 
   function drawObj(o) {
@@ -711,7 +952,7 @@
     } else if (o.kind === 'power') {
       const pc = POWERS[o.power].color, cx = X(o.lane, o.z), cy = Y(o.z, o.h + 0.08 * Math.sin(S.anim * 4)), r = 0.28 * u;
       ctx.save(); ctx.translate(cx, cy); ctx.rotate(S.anim * 1.5);
-      ctx.strokeStyle = pc; ctx.fillStyle = '#000';
+      ctx.strokeStyle = pc;
       for (const [lw, al] of [[Math.max(4, 12 * s), 0.3 * a], [Math.max(2, 4 * s), a]]) {
         ctx.globalAlpha = al; ctx.lineWidth = lw; ctx.strokeRect(-r, -r, r * 2, r * 2);
       }
@@ -725,47 +966,77 @@
         line(bx - hw * 0.55, (by + ty) / 2, bx + hw * 0.55, (by + ty) / 2);
       }
     } else if (o.kind === 'barrier') {
-      const xl = X(o.lane - o.w / 2, zc), xr = X(o.lane + o.w / 2, zc), yt = Y(zc, 1.5), yb = Y(zc, 0.55);
-      ctx.strokeStyle = C.orange; ctx.lineWidth = Math.max(2, 4 * s);
-      line(xl + 6 * s, Y(zc), xl + 6 * s, yb); line(xr - 6 * s, Y(zc), xr - 6 * s, yb);
-      ctx.save();
-      ctx.beginPath(); ctx.rect(xl, yt, xr - xl, yb - yt); ctx.fillStyle = '#1c0a02'; ctx.fill(); ctx.clip();
-      ctx.strokeStyle = C.orange; ctx.lineWidth = Math.max(3, 10 * s);
-      ctx.beginPath();
-      for (let k = -(yb - yt); k < xr - xl; k += 26 * s) { ctx.moveTo(xl + k, yb); ctx.lineTo(xl + k + (yb - yt), yt); }
-      ctx.stroke(); ctx.restore();
-      ctx.strokeStyle = C.orange; ctx.lineWidth = Math.max(2, 3 * s); ctx.strokeRect(xl, yt, xr - xl, yb - yt);
-      if (Math.sin(S.anim * 10 + o.lane) > 0) {
-        ctx.fillStyle = C.yellow; ctx.beginPath(); ctx.arc((xl + xr) / 2, Y(zc, 1.62), Math.max(2, 8 * s), 0, Math.PI * 2); ctx.fill();
+      // Lane-end arrow board pointing where to merge.
+      const f = frame(o.lane, zc, 0);
+      ctx.strokeStyle = C.chrome; ctx.lineWidth = Math.max(2, 4 * s);
+      fline(f, -0.36, 0, -0.36, 0.45); fline(f, 0.36, 0, 0.36, 0.45);
+      frect(f, -0.46, 0.45, 0.46, 1.35, '#1c0a02', C.orange);
+      ctx.strokeStyle = Math.sin(S.anim * 8) > -0.2 ? C.orange : C.yellow; ctx.lineWidth = Math.max(2, 9 * s);
+      chevronRow(f.cx, fy(f, 0.9), o.dir, 3, 0.26 * f.V, 0.26 * f.U);
+      if (Math.sin(S.anim * 10) > 0) fcircle(f, 0, 1.45, 0.06, C.yellow);
+    } else if (o.kind === 'sign') {
+      const w = S.dist + o.z, x = edgeAt(o.side, w) + dirOf(o.side) * 0.9, f = frame(x, zc, 0);
+      if (o.z < NEAR) return;
+      ctx.strokeStyle = C.chrome; ctx.lineWidth = Math.max(1.5, 4 * s); fline(f, 0, 0, 0, 1.4);
+      frect(f, -0.55, 1.35, 0.55, 2.05, '#120c02', o.col);
+      if (s > 0.16) {
+        ctx.font = `900 ${Math.round(0.2 * f.V)}px system-ui, Roboto, sans-serif`;
+        ctx.fillStyle = o.col; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillText(o.text, f.cx, fy(f, 1.85));
+        ctx.strokeStyle = o.col; ctx.lineWidth = Math.max(1.5, 4 * s);
+        chevronRow(f.cx, fy(f, 1.53), o.dir, 2, 0.08 * f.V, 0.14 * f.U);
       }
     }
     ctx.globalAlpha = 1;
   }
 
-  // Your ride, seen from behind: a pink wedge with a full-width taillight bar.
+  // Your ride: a white Testarossa-style wedge with louvred taillights and neon underglow.
+  // It yaws toward the lane it's heading for, rolls into the turn, and buzzes with the road.
   function drawPlayer() {
-    const x = S.px, y = S.y, z0 = -0.6, z1 = 0.9;
-    if (y > S.ground + 0.05) {
-      ctx.globalAlpha = 0.5; ctx.strokeStyle = C.cyan; ctx.lineWidth = 2;
-      ctx.beginPath(); ctx.ellipse(X(x, 0), Y(0, S.ground), 0.42 * LANE_PX * scaleAt(0), 10, 0, 0, Math.PI * 2); ctx.stroke();
+    const steer = clamp(S.lane - S.px, -1, 1), x = S.px, y = S.y + S.bounce, z0 = -0.6, z1 = 1.0, xF = x + steer * 0.35;
+    const g0 = frame(x, 0.2, S.ground);
+    for (const [lw, al] of [[10, 0.18], [2.5, 0.8]]) {
+      ctx.globalAlpha = al * (0.8 + 0.2 * Math.sin(S.anim * 6)); ctx.strokeStyle = C.cyan; ctx.lineWidth = lw;
+      ctx.beginPath(); ctx.ellipse(g0.cx, g0.by, 0.52 * g0.U, 10, 0, 0, Math.PI * 2); ctx.stroke();
     }
     ctx.globalAlpha = S.invuln > 0 && Math.floor(S.anim * 16) % 2 ? 0.35 : 1;
-    const px = X(x, z0), py = Y(z0, y);
+    const f = frame(x, z0, y);
     ctx.save();
-    ctx.translate(px, py); ctx.rotate((S.lane - S.px) * 0.1); ctx.translate(-px, -py);
-    for (const dx of [-0.3, 0.3]) box(x + dx, 0.16, z0 + 0.08, z0 + 0.45, y, y + 0.2, C.cyan, '#000', 2);
-    box(x, 0.8, z0, z1, y + 0.1, y + 0.42, C.pink, '#2a0628', 3);
-    box(x, 0.58, z0 + 0.5, z0 + 1.2, y + 0.42, y + 0.66, C.cyan, '#061a26', 2.5);
-    const s = scaleAt(z0), xl = X(x - 0.36, z0), xr = X(x + 0.36, z0), ty = Y(z0, y + 0.33), th = 0.07 * UNIT_PX * s;
-    const ga = ctx.globalAlpha;
-    ctx.fillStyle = C.tail; ctx.globalAlpha = ga * 0.35; ctx.fillRect(xl - 4, ty - 4, xr - xl + 8, th + 8);
-    ctx.globalAlpha = ga; ctx.fillRect(xl, ty, xr - xl, th);
-    ctx.fillStyle = C.text; ctx.fillRect(X(x - 0.09, z0), Y(z0, y + 0.24), 0.18 * LANE_PX * s, 0.06 * UNIT_PX * s);
-    if (S.pw.nitro > 0) {
-      ctx.fillStyle = Math.floor(S.anim * 20) % 2 ? C.orange : C.yellow;
-      for (const dx of [-0.2, 0.2]) {
-        const ex = X(x + dx, z0), ey = Y(z0, y + 0.17);
-        ctx.beginPath(); ctx.moveTo(ex - 7, ey); ctx.lineTo(ex + 7, ey); ctx.lineTo(ex, ey + rand(18, 32)); ctx.closePath(); ctx.fill();
+    ctx.translate(f.cx, f.by); ctx.rotate(-steer * 0.07 + S.wobble); ctx.translate(-f.cx, -f.by);
+    // Tyres with scrolling tread.
+    for (const a of [-0.43, 0.29]) {
+      frect(f, a, 0, a + 0.14, 0.17, '#040407', '#3a3550');
+      ctx.strokeStyle = '#4b4566'; ctx.lineWidth = 2;
+      for (let k = 0; k < 3; k++) { const b = (((S.dist * 1.5 + k / 3) % 1) + 1) % 1 * 0.16; fline(f, a + 0.01, b, a + 0.13, b); }
+    }
+    box(x, xF, 0.86, z0, z1, y + 0.1, y + 0.38, C.pink, '#1b0620', 3);
+    // Side strakes on whichever flank we can see.
+    const sideX = x + (x > S.cam ? -0.43 : 0.43);
+    ctx.strokeStyle = C.pink; ctx.lineWidth = 2;
+    for (const hh of [0.17, 0.23, 0.29]) line(X(sideX, z0 + 0.15), Y(z0 + 0.15, y + hh), X(sideX + (xF - x) * 0.6, z0 + 1.0), Y(z0 + 1.0, y + hh));
+    box(x, xF, 0.56, z0 + 0.55, z0 + 1.2, y + 0.38, y + 0.57, C.pink, '#12040f', 2.5);
+    const fc = frame(x, z0 + 0.55, y);
+    fpoly(fc, [[-0.25, 0.39], [0.25, 0.39], [0.2, 0.55], [-0.2, 0.55]], C.glass, C.cyan);
+    ctx.strokeStyle = C.cyan; ctx.globalAlpha *= 0.6; fline(fc, -0.12, 0.42, 0.02, 0.53); ctx.globalAlpha /= 0.6;
+    // Rear lip spoiler.
+    fpoly(f, [[-0.44, 0.37], [0.44, 0.37], [0.46, 0.42], [-0.46, 0.42]], '#1b0620', C.pink);
+    // Louvred taillight panel: red glow behind black slats.
+    const braking = S.brakeT > 0, ga = ctx.globalAlpha;
+    ctx.globalAlpha = ga * (braking ? 0.5 : 0.25); frect(f, -0.43, 0.17, 0.43, 0.36, C.tail);
+    ctx.globalAlpha = ga * (braking ? 1 : 0.8); frect(f, -0.39, 0.2, 0.39, 0.33, C.tail);
+    ctx.globalAlpha = ga;
+    ctx.strokeStyle = '#1b0620'; ctx.lineWidth = 1.5;
+    for (const b of [0.235, 0.265, 0.295]) fline(f, -0.39, b, 0.39, b);
+    frect(f, -0.08, 0.12, 0.08, 0.18, C.text);
+    ctx.strokeStyle = C.chrome; ctx.lineWidth = 2;
+    fcircle(f, -0.2, 0.08, 0.035, '#000', C.chrome); fcircle(f, 0.2, 0.08, 0.035, '#000', C.chrome);
+    if (S.boostT > 0 || S.pw.nitro > 0) {
+      for (const a of [-0.2, 0.2]) {
+        const ex = fx(f, a), ey = fy(f, 0.08), len = rand(24, 44);
+        ctx.fillStyle = S.pw.nitro > 0 ? C.orange : C.cyan;
+        ctx.beginPath(); ctx.moveTo(ex - 8, ey); ctx.lineTo(ex + 8, ey); ctx.lineTo(ex, ey + len); ctx.closePath(); ctx.fill();
+        ctx.fillStyle = C.text;
+        ctx.beginPath(); ctx.moveTo(ex - 3, ey); ctx.lineTo(ex + 3, ey); ctx.lineTo(ex, ey + len * 0.5); ctx.closePath(); ctx.fill();
       }
     }
     ctx.restore();
@@ -787,12 +1058,12 @@
   }
 
   function drawSpeedLines() {
-    if (!(S.pw.nitro > 0) || S.mode !== 'play') return;
-    ctx.strokeStyle = C.text; ctx.lineWidth = 2; ctx.globalAlpha = 0.35;
+    if (S.mode !== 'play' || !(S.boostT > 0 || S.pw.nitro > 0 || S.speed > 30)) return;
+    ctx.strokeStyle = C.text; ctx.lineWidth = 2; ctx.globalAlpha = S.boostT > 0 || S.pw.nitro > 0 ? 0.4 : 0.18;
     ctx.beginPath();
-    for (let i = 0; i < 10; i++) {
-      const ang = rand(0, Math.PI * 2), r0 = rand(160, 260), r1 = r0 + rand(40, 90);
-      ctx.moveTo(CX + Math.cos(ang) * r0, 330 + Math.sin(ang) * r0); ctx.lineTo(CX + Math.cos(ang) * r1, 330 + Math.sin(ang) * r1);
+    for (let i = 0; i < 12; i++) {
+      const ang = rand(0, Math.PI * 2), r0 = rand(170, 260), r1 = r0 + rand(40, 100);
+      ctx.moveTo(CX + Math.cos(ang) * r0, 300 + Math.sin(ang) * r0); ctx.lineTo(CX + Math.cos(ang) * r1, 300 + Math.sin(ang) * r1);
     }
     ctx.stroke(); ctx.globalAlpha = 1;
   }
@@ -812,11 +1083,30 @@
     ctx.globalAlpha = 0.92; ctx.fillStyle = C.panel; rrect(CX - 250, y, 500, h, 22); ctx.fill();
     ctx.globalAlpha = 0.8; ctx.strokeStyle = C.pink; ctx.lineWidth = 2; ctx.stroke(); ctx.globalAlpha = 1;
   }
-  function chevrons(x, y, dir, color) {
-    ctx.strokeStyle = color; ctx.lineWidth = 4;
-    ctx.beginPath();
-    for (const o of [0, 12]) { const xx = x + dir * o; ctx.moveTo(xx - dir * 7, y - 9); ctx.lineTo(xx + dir * 2, y); ctx.lineTo(xx - dir * 7, y + 9); }
-    ctx.stroke();
+
+  function drawSpeedo() {
+    const cx = 528, cy = 540, r = 50, a0 = Math.PI * 0.8, a1 = Math.PI * 2.2;
+    const kmh = Math.round(S.speed * KMH), frac = clamp(kmh / 450, 0, 1);
+    ctx.lineWidth = 8; ctx.strokeStyle = '#2a1640';
+    ctx.beginPath(); ctx.arc(cx, cy, r, a0, a1); ctx.stroke();
+    ctx.strokeStyle = kmh < 180 ? C.cyan : kmh < 280 ? C.yellow : C.pink;
+    ctx.beginPath(); ctx.arc(cx, cy, r, a0, a0 + (a1 - a0) * frac); ctx.stroke();
+    ctx.lineWidth = 2; ctx.strokeStyle = C.dim;
+    for (let i = 0; i <= 9; i++) { const a = a0 + ((a1 - a0) * i) / 9; line(cx + Math.cos(a) * (r - 12), cy + Math.sin(a) * (r - 12), cx + Math.cos(a) * (r - 7), cy + Math.sin(a) * (r - 7)); }
+    text(String(kmh), cx, cy - 4, 28, C.text, 900, 'center', 'italic ');
+    text('KM/H', cx, cy + 20, 12, C.dim, 800);
+  }
+
+  function drawBoostBar() {
+    const x0 = CX - 78, y = H - 26;
+    text('BOOST', x0 - 10, y + 1, 13, S.boostT > 0 ? C.cyan : C.dim, 800, 'right', 'italic ');
+    for (let i = 0; i < 3; i++) {
+      const x = x0 + i * 54, fill = clamp(S.boost - i, 0, 1);
+      ctx.fillStyle = '#10223a'; rrect(x, y - 7, 48, 14, 5); ctx.fill();
+      if (fill > 0) { ctx.fillStyle = fill >= 1 ? C.cyan : '#1e7f93'; rrect(x, y - 7, 48 * fill, 14, 5); ctx.fill(); }
+      ctx.strokeStyle = C.cyan; ctx.lineWidth = 1.5; rrect(x, y - 7, 48, 14, 5); ctx.stroke();
+    }
+    if (S.boost >= 1 && S.boostT <= 0 && Math.sin(S.anim * 5) > 0) text('swipe ↑', x0 + 170, y + 1, 13, C.cyan, 700, 'left');
   }
 
   function drawHud() {
@@ -824,26 +1114,23 @@
     const blink = 0.55 + 0.45 * Math.sin(S.anim * 5);
     if (S.mode !== 'title') {
       text(String(Math.floor(S.score)), 22, 30, 26, C.text, 800, 'left');
-      const m = mult();
-      text(`x${m}`, 22, 60, 20, m >= 3 ? C.yellow : m === 2 ? C.cyan : C.dim, 800, 'left', 'italic ');
+      if (mult() > 1) text(`x${mult()}`, 22, 60, 20, C.yellow, 800, 'left', 'italic ');
       text(String(S.coins), 578, 30, 26, C.yellow, 800, 'right');
       ctx.font = FONT(800, 26);
       const cw = ctx.measureText(String(S.coins)).width;
       ctx.strokeStyle = C.yellow; ctx.lineWidth = 4;
       ctx.beginPath(); ctx.ellipse(578 - cw - 18, 30, 7, 10, 0, 0, Math.PI * 2); ctx.stroke();
 
-      // Lane map.
-      const n = laneCount(), bw = 16, gap = 5, x0 = CX - (n * bw + (n - 1) * gap) / 2;
+      // Lane map for where you are right now.
+      const L = laneAt('L', S.dist), R = laneAt('R', S.dist), n = R - L + 1, bw = 16, gap = 5, x0 = CX - (n * bw + (n - 1) * gap) / 2;
       for (let i = 0; i < n; i++) {
-        const l = S.L + i, fresh = S.t - (S.born[l] ?? -99) < FRESH_T;
-        ctx.strokeStyle = fresh ? C.mint : C.cyan; ctx.fillStyle = C.pink; ctx.lineWidth = 2;
+        ctx.strokeStyle = C.cyan; ctx.fillStyle = C.pink; ctx.lineWidth = 2;
         rrect(x0 + i * (bw + gap), 18, bw, 26, 4);
-        if (l === S.lane) ctx.fill();
+        if (L + i === S.lane) ctx.fill();
         ctx.stroke();
       }
 
-      // Active power-ups with time left.
-      let py = H - 34;
+      let py = H - 70;
       for (const k of Object.keys(POWERS)) {
         const left = S.pw[k] || 0;
         if (left <= 0) continue;
@@ -852,57 +1139,62 @@
         ctx.fillRect(56, py - 3, 70 * Math.min(1, left / POWERS[k].dur), 6); ctx.globalAlpha = 1;
         py -= 40;
       }
+      drawSpeedo();
+      drawBoostBar();
 
-      if (S.mode === 'play' && S.arm) {
-        const col = S.arm === 'open' ? C.mint : C.orange;
-        chevrons(CX - 110, H - 40, -1, col); chevrons(CX + 110, H - 40, 1, col);
-        text(S.arm === 'open' ? 'OPEN LANE' : 'CLOSE LANE', CX, H - 40, 22, col, 800);
-      }
-
-      const block = S.objs.find((o) => o.kind === 'barrier' && o.z > 0);
-      if (S.mode === 'play' && block && Math.sin(S.anim * 9) > -0.3) {
-        ctx.globalAlpha = 0.9; ctx.fillStyle = '#2a0808'; rrect(CX - 190, 64, 380, 58, 14); ctx.fill();
-        ctx.strokeStyle = C.red; ctx.lineWidth = 2; ctx.stroke(); ctx.globalAlpha = 1;
-        text('ROAD CLOSED AHEAD', CX, 82, 20, C.red, 900);
-        text('pave a new lane!', CX, 106, 16, C.orange, 700);
-        chevrons(CX - 150, 94, -1, C.orange); chevrons(CX + 150, 94, 1, C.orange);
+      // Your lane is about to end: say which way to merge.
+      if (S.mode === 'play') {
+        for (const side of ['L', 'R']) {
+          for (const c of S.road[side].ch) {
+            const ahead = c.w - S.dist;
+            if (isOpening(side, c) || c.from !== S.lane || ahead < 0 || ahead > 55 || Math.sin(S.anim * 9) < -0.3) continue;
+            ctx.globalAlpha = 0.9; ctx.fillStyle = '#2a1a02'; rrect(CX - 170, 62, 340, 48, 14); ctx.fill();
+            ctx.strokeStyle = C.yellow; ctx.lineWidth = 2; ctx.stroke(); ctx.globalAlpha = 1;
+            text('LANE ENDS · MERGE', CX, 86, 21, C.yellow, 900);
+            ctx.strokeStyle = C.yellow; ctx.lineWidth = 4;
+            chevronRow(CX + dirOf(side) * -140, 86, -dirOf(side), 2, 9, 12);
+          }
+        }
       }
       if (S.toast && S.mode === 'play') {
         ctx.globalAlpha = clamp(S.toast.t / 0.4, 0, 1);
-        text(S.toast.text, CX, 180 - (1.4 - S.toast.t) * 20, 30, S.toast.color, 900, 'center', 'italic ');
+        text(S.toast.text, CX, 170 - (1.4 - S.toast.t) * 20, 28, S.toast.color, 900, 'center', 'italic ');
         ctx.globalAlpha = 1;
       }
     }
 
     if (S.mode === 'title') {
-      panel(118, 400);
-      chroma('LANE RUNNER', 164, 50);
-      text('V A P O R   F R E E W A Y', CX, 206, 18, C.pink, 700);
+      panel(110, 420);
+      chroma('LANE RUNNER', 156, 50);
+      text('V A P O R   F R E E W A Y', CX, 198, 18, C.pink, 700);
       const rows = [
-        ['← →', 'steer · off the edge paves a lane'],
-        ['↑', 'jump · ride up the trucks'],
-        ['pinch + ← →', 'open a lane'],
-        ['↓ + ← →', 'close a lane (3 minimum)'],
+        ['← →', 'change lanes'],
+        ['swipe ↑', 'boost (charges as you drive)'],
+        ['swipe ↓', 'brake'],
+        ['pinch', 'horn: traffic moves over'],
       ];
       rows.forEach(([k, v], i) => {
-        text(k, CX - 80, 250 + i * 32, 18, C.cyan, 800, 'right');
-        text(v, CX - 64, 250 + i * 32, 17, C.dim, 500, 'left');
+        text(k, CX - 70, 242 + i * 32, 18, C.cyan, 800, 'right');
+        text(v, CX - 54, 242 + i * 32, 17, C.dim, 500, 'left');
       });
-      text('Fewer lanes = bigger multiplier', CX, 386, 18, C.yellow, 700);
-      ctx.globalAlpha = blink; text('Pinch to start', CX, 438, 28, C.text, 800); ctx.globalAlpha = 1;
-      if (S.best) text(`Best ${S.best}`, CX, 482, 18, C.yellow, 600);
+      text('Lanes open and end. Watch for LANE ENDS.', CX, 380, 16, C.yellow, 700);
+      text('Drive up the ramp trucks for coins.', CX, 404, 16, C.yellow, 700);
+      ctx.globalAlpha = blink; text('Pinch to start', CX, 452, 28, C.text, 800); ctx.globalAlpha = 1;
+      if (S.best) text(`Best ${S.best}`, CX, 494, 18, C.yellow, 600);
+      text(BUILD, CX + 232, 514, 12, C.dim, 600, 'right');
     } else if (S.mode === 'paused') {
       panel(230, 130);
       text('Paused', CX, 272, 34, C.text, 800);
       ctx.globalAlpha = blink; text('Pinch to resume', CX, 322, 22, C.dim, 600); ctx.globalAlpha = 1;
     } else if (S.mode === 'over') {
-      panel(160, 270);
-      chroma('WRECKED', 206, 46);
-      text(`Score ${Math.floor(S.score)}`, CX, 262, 30, C.text, 800);
-      text(`${S.coins} coins  ·  best ${S.best}`, CX, 300, 19, C.dim, 500);
-      if (S.newBest) text('New best!', CX, 334, 22, C.yellow, 800);
+      panel(150, 290);
+      chroma('WRECKED', 196, 46);
+      text(`Score ${Math.floor(S.score)}`, CX, 252, 30, C.text, 800);
+      text(`${Math.round(S.dist / 100) / 10} km  ·  top ${Math.round(S.base * KMH)} km/h`, CX, 290, 19, C.dim, 500);
+      text(`${S.coins} coins  ·  best ${S.best}`, CX, 318, 19, C.dim, 500);
+      if (S.newBest) text('New best!', CX, 350, 22, C.yellow, 800);
       const ready = performance.now() - S.overAt > RESTART_LOCK_MS;
-      ctx.globalAlpha = ready ? blink : 0.25; text('Pinch to drive again', CX, 384, 24, C.text, 800); ctx.globalAlpha = 1;
+      ctx.globalAlpha = ready ? blink : 0.25; text('Pinch to drive again', CX, 398, 24, C.text, 800); ctx.globalAlpha = 1;
     }
   }
 
@@ -914,7 +1206,7 @@
     drawSky();
     drawGrid();
     drawRoad();
-    drawPalms();
+    drawRoadside();
     const live = S.objs.filter((o) => !o.dead).sort((a, b) => b.z - a.z);
     const under = (o) => o.z > 0 || o === S.onObj;
     for (const o of live) if (under(o)) drawObj(o);
@@ -929,12 +1221,12 @@
 
   // Desktop testing hook (not used by the game itself).
   window.__laneRunner = S;
-  window.__laneRunnerDebug = { reset, openLane, closeLane, update, render, addCar, addTruck, spawnBlock, add };
+  window.__laneRunnerDebug = { reset, update, render, addCar, addTruck, add, scheduleLaneChange, laneAt, edgeAt, baseSpeed };
 
   // ---------- loop: capped at ~30 fps to match the 30 Hz panel ----------
   let raf = 0, last = 0;
-  function frame(t) {
-    raf = requestAnimationFrame(frame);
+  function tick(t) {
+    raf = requestAnimationFrame(tick);
     if (!last) { last = t; return; }
     const elapsed = t - last;
     if (elapsed < 30) return;
@@ -942,13 +1234,14 @@
     update(Math.min(elapsed / 1000, 0.05));
     render();
   }
-  function startLoop() { if (!raf) { last = 0; raf = requestAnimationFrame(frame); } }
+  function startLoop() { if (!raf) { last = 0; raf = requestAnimationFrame(tick); } }
   function stopLoop() { if (raf) { cancelAnimationFrame(raf); raf = 0; } }
 
   // Nothing may run while hidden.
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) {
       if (S.mode === 'play') S.mode = 'paused';
+      engine(false);
       stopLoop();
       if (actx && actx.state === 'running') actx.suspend();
     } else {
