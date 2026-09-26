@@ -125,6 +125,12 @@ const path = require('path');
   await run(20); await key('ArrowUp'); await run(0.6); await shot('7-traffic');
   const perf = await p.evaluate(() => { const t0 = performance.now(); for (let i = 0; i < 300; i++) __laneRunnerDebug.render(); return (performance.now() - t0) / 300; });
   console.log('avg render ms (desktop):', perf.toFixed(2), 'objs', await p.evaluate(() => __laneRunner.objs.length));
+  // Restarting after a wreck reloads the page from the server under a fresh URL and drops straight into a run.
+  await fresh(); await p.evaluate(() => __laneRunnerDebug.addCar(0, 6)); await run(3);
+  ok((await S()).mode === 'over', 'wrecked before restart');
+  await p.clock.runFor(1000);
+  await Promise.all([p.waitForNavigation(), key('Enter')]);
+  ok(/[?&]v=\d+&go=1$/.test(p.url()) && (await S()).mode === 'play', 'restart reloads a fresh copy into play ' + p.url());
   ok(errs.length === 0, 'no page errors ' + errs.join(' | '));
   await b.close();
 })();
