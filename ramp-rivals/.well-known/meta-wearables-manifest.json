@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "name": "Ramp Rivals",
+  "description": "A TRON-style cartoon lane racer: race seven rival bots across eight lanes. Bump, draft, boost and trick off ramps.",
+  "appearance": {
+    "theme_color": "#35E0FF",
+    "icon": { "src": "icon.svg", "type": "monochrome" },
+    "icon_background": { "colors": ["#FF4FD8", "#3A0B52"], "stops": [0.0, 1.0] }
+  }
+}
