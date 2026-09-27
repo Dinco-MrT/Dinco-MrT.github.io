@@ -45,6 +45,17 @@ A vaporwave freeway racer, seen from behind your car in pseudo-3D.
 - **Fairness (no impossible scenarios).** Every frame, after physics, `fairness()` scans ahead. If every usable lane is blocked at about the same distance (±1.5 units; car carriers and trick ramps count as passable), the furthest vehicle takes an exit. This was mostly rolling roadblocks: cars from different spawn rows drifting side by side, which blocked about 7% of frames before the fix and 0 after.
 - **No popping.** Everything spawns at `SPAWN` (= FAR + 10), fully transparent, and fades in over 12 units. Anything removed during play (knocked-out, fairness exits, trick landing clears) uses `exitObj()`: it slides off the nearer side of the road and fades out, and is non-solid while it does. Nothing vanishes instantly any more.
 
+- **Boost impact.** A boost gives an instant speed jolt (×1.3) on top of a 1.6× top speed. On screen you get a FOV punch (`S.hud.kick`), a cyan flash, a shockwave ring (`ring()` / `drawRings`), 30 speed lines, glowing screen edges, long twin exhaust flames with taillight afterimages, a bass boom, and a speedo that pops and turns cyan.
+- **HUD style.** Everything is built from `chip()`: a dark rounded panel with a neon outline and a top sheen.
+  - Top left: SCORE rolls up and pops on big gains, next to an xN badge (mint when the style chain is on), with the STYLE bar and a shaking DAMAGED chip beneath.
+  - Top right: COINS, with coins flying into the counter (`flyCoin`).
+  - Top centre: the lane map, with a sliding dot and ending lanes blinking yellow.
+  - Bottom: power-up chips, the boost meter (segments flash when they fill, plus a bobbing ↑ hint) and a circular speedo.
+  - All of it slides in at the start of a run with a "GO!".
+  - Toasts pop in with overshoot, zone banners sweep in, and combo icons drop in and bounce as you hit them.
+  - The title screen animates, with key chips and a pulsing start pill. The game-over screen scales in, counts the score up, and shows four stat cards (distance, top speed, coins, perfect combos) plus a NEW BEST badge.
+- **Fewer lane changes.** Cones and trick ramps only go in lanes where no vehicle ahead would reach them before you overtake it (`quiet()` in `spawnRow`). Traffic isn't spawned into lanes that end within 150 units, and lane endings pick the side with less traffic. That took lane changes from 8/min to about 2.5/min and stopped cars from 14/min to about 2/min.
+
 ### Controls (glasses input = key events)
 
 The Neural Band and temple touchpad send swipes as `ArrowLeft/Right/Up/Down` and a pinch as `Enter`. Always match on `e.key`, because device events have an empty `code`. Leave `Escape` alone: it's the system Back.
