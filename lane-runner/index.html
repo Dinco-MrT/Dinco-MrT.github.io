@@ -26,7 +26,7 @@
 <script>
 'use strict';
 (() => {
-  const W = 600, H = 600, BUILD = 'v6';
+  const W = 600, H = 600, BUILD = 'v7';
   const ctx = document.getElementById('c').getContext('2d');
 
   // ---------- tuning ----------
@@ -38,10 +38,13 @@
   const MIN_LANES = 3, MAX_LANES = 6, TAPER = 12;      // freeway lanes come and go; tapers are TAPER units long
   const HALF_LEN = 0.6, HALF_W = 0.38;                 // player hitbox
   const RESTART_LOCK_MS = 800;
+  const HIT_WINDOW = 60, HIT_SLOW_T = 2.5;             // a second hit within HIT_WINDOW s wrecks you
+  const SIGNAL_T = 0.8, EXIT_T = 0.7;                  // traffic indicates before changing lanes; exits fade out
 
   // ---------- pseudo-3D projection; the camera slides sideways with the car ----------
   const HORIZON = 150, GROUND = 515, CX = 300;
   const LANE_PX = 130, UNIT_PX = 120, FAR = 64, NEAR = -4;
+  const SPAWN = FAR + 10; // things appear out here, fully transparent, and fade in on the way to FAR
   const scaleAt = (z) => S.D / (Math.max(z, -S.D * 0.85) + S.D);
   const X = (x, z) => CX + (x - S.cam) * LANE_PX * scaleAt(z);
   const Y = (z, h = 0) => { const s = scaleAt(z); return HORIZON + (GROUND - HORIZON) * s - (h - S.camH) * UNIT_PX * s; }; // camH: camera rises with big air
@@ -114,6 +117,7 @@
     objs: [], parts: [], sinceRow: 0, gapNext: 14, nextPower: 8, nextLane: 160,
     cam: 0, camH: 0, shake: 0, flash: 0, anim: 0, ui: 0, wobble: 0, bounce: 0, overAt: 0, toast: null, streak: 0, streakT: 0,
     trick: null, trickAnim: null, slow: 1, chain: 0, chainT: 0, nextKick: 180, event: null, nextEvent: 40, zone: 0, zoneBanner: null,
+    lastHitT: -1e9, hitSlowT: 0,
     best: loadBest(), newBest: false,
   };
 
@@ -130,6 +134,7 @@
       boost: 1, boostT: 0, brakeT: 0, hornT: 0, pw: {}, invuln: 0, objs: [], parts: [],
       sinceRow: 0, gapNext: 14, nextPower: 8, nextLane: 160, toast: null, streak: 0, streakT: 0, newBest: false,
       trick: null, trickAnim: null, slow: 1, chain: 0, chainT: 0, nextKick: 180, event: null, nextEvent: 40, zone: 0, zoneBanner: null,
+      lastHitT: -1e9, hitSlowT: 0,
     });
   }
 
@@ -157,7 +162,7 @@
   function scheduleLaneChange() {
     const n = lastLane('R') - lastLane('L') + 1;
     const open = n <= MIN_LANES ? true : n >= MAX_LANES ? false : Math.random() < 0.5;
-    const w = S.dist + FAR + 40;
+    const w = S.dist + SPAWN + 40;
     const sides = shuffle(['L', 'R']).filter((sd) => { const ch = S.road[sd].ch; return !ch.length || w - ch[ch.length - 1].w > TAPER + 40; });
     if (!sides.length) return;
     const side = sides[0], d = dirOf(side), from = lastLane(side), to = open ? from + d : from - d;
@@ -219,6 +224,7 @@
     launch: () => { tone(200, 1200, 0.4, 'sawtooth', 0.05); tone(900, 180, 0.6, 'triangle', 0.04, 0.15); },
     trick: (i) => tone(600 + i * 160, 900 + i * 220, 0.12, 'square', 0.04),
     perfect: () => [659, 784, 988, 1319, 1568].forEach((f, i) => tone(f, f * 1.01, 0.12, 'square', 0.04, i * 0.07)),
+    hit: () => { tone(320, 70, 0.35, 'square', 0.08); tone(900, 200, 0.2, 'sawtooth', 0.04); },
     event: () => [392, 523, 392, 523].forEach((f, i) => tone(f, f, 0.09, 'square', 0.035, i * 0.1)),
   };
 
@@ -299,7 +305,7 @@
     S.trick = { seq: Array.from({ length: n }, () => pick(DIR_LIST)), i: 0, state: 'active', total: airLeft(), landed: false, hide: 0 };
     // Traffic scatters from where you'll come down.
     for (const o of S.objs) {
-      if (!o.dead && SOLID.has(o.kind) && o.kind !== 'kicker' && Math.abs(o.lane - S.lane) < 0.75 && o.z > 1 && o.z < 45) poof(o);
+      if (!o.dead && SOLID.has(o.kind) && o.kind !== 'kicker' && Math.abs(o.lane - S.lane) < 0.75 && o.z > 1 && o.z < 45) exitObj(o);
     }
     burst(S.px, 0.5, S.y, 16, C.pink, 5, 0.6);
     S.shake = 0.15; sfx.launch();
@@ -358,7 +364,7 @@
   }
 
   function laneClearAt(l, z0, z1, except = null) {
-    return !S.objs.some((o) => o !== except && !o.dead && SOLID.has(o.kind) &&
+    return !S.objs.some((o) => o !== except && !o.dead && !o.exiting && SOLID.has(o.kind) &&
       (Math.round(o.lane) === l || o.mergeTo === l) && o.z < z1 && o.z + o.len > z0);
   }
 
@@ -369,7 +375,7 @@
     // Never cut in right in front of the player (or into the lane they're steering to).
     if ((Math.abs(nl - S.px) < 0.9 || nl === S.lane) && o.z < 14 && o.z + o.len > -3) return false;
     if (S.trick && nl === S.lane && o.z < 45) return false; // keep the landing zone clear
-    o.mergeTo = nl;
+    o.mergeTo = nl; o.signal = SIGNAL_T; // indicate first, then move over
     return true;
   }
 
@@ -401,9 +407,9 @@
   function coinLine(lane, z, n) { for (let i = 0; i < n; i++) add({ kind: 'coin', lane, z: z + i * 1.4, h: 0.35 }); }
 
   function spawnRow() {
-    const w = S.dist + FAR;
+    const w = S.dist + SPAWN;
     const all = range(laneAt('L', w), laneAt('R', w));
-    const open = shuffle(all.filter((l) => laneClearAt(l, FAR - 10, FAR + 20)));
+    const open = shuffle(all.filter((l) => laneClearAt(l, SPAWN - 10, SPAWN + 20)));
     if (!open.length) return;
     const ev = S.event && S.event.kind;
     let dens = Math.min(0.6, 0.25 + S.t / 240);
@@ -415,33 +421,33 @@
     n = Math.min(n, all.length - 1, open.length); // always leave a way through
     for (let i = 0; i < n; i++) {
       const l = open[i], r = Math.random();
-      if (r < 0.14) addTruck(l, FAR, 'ramp');
+      if (r < 0.14) addTruck(l, SPAWN, 'ramp');
       else if (r < 0.3) {
-        const t = addTruck(l, FAR, Math.random() < 0.3 ? 'tanker' : 'semi');
-        if (Math.random() < 0.25) addTruck(l, FAR + t.len + 1.2, 'semi', t.frac); // convoy
-      } else addCar(l, FAR);
+        const t = addTruck(l, SPAWN, Math.random() < 0.3 ? 'tanker' : 'semi');
+        if (Math.random() < 0.25) addTruck(l, SPAWN + t.len + 1.2, 'semi', t.frac); // convoy
+      } else addCar(l, SPAWN);
     }
     const rest = open.slice(n);
     if (S.nextKick <= 0 && rest.length) {
       const l = rest.find((k) => laneAt('L', w + 30) <= k && k <= laneAt('R', w + 30));
       if (l !== undefined) {
-        addKicker(l, FAR + 8);
+        addKicker(l, SPAWN + 8);
         rest.splice(rest.indexOf(l), 1);
         S.nextKick = ev === 'stunt' ? rand(45, 70) : rand(380, 600);
       }
     }
-    if (ev === 'coins') { for (const l of rest) coinLine(l, FAR + 1, 6); return; }
+    if (ev === 'coins') { for (const l of rest) coinLine(l, SPAWN + 1, 6); return; }
     if (rest.length) {
       const r = Math.random();
-      if (r < 0.45) coinLine(rest[0], FAR + 1, 6);
-      else if (r < 0.55 && S.t > 10) add({ kind: 'cones', lane: rest[0], z: FAR + 2, len: 0.5, w: 0.9, h: 0.4 });
+      if (r < 0.45) coinLine(rest[0], SPAWN + 1, 6);
+      else if (r < 0.55 && S.t > 10) add({ kind: 'cones', lane: rest[0], z: SPAWN + 2, len: 0.5, w: 0.9, h: 0.4 });
     }
   }
 
   function spawnPower() {
-    const w = S.dist + FAR;
-    const lanes = shuffle(range(laneAt('L', w), laneAt('R', w))).filter((l) => laneClearAt(l, FAR - 4, FAR + 3));
-    if (lanes.length) add({ kind: 'power', power: pick(Object.keys(POWERS)), lane: lanes[0], z: FAR + 1, h: 0.55 });
+    const w = S.dist + SPAWN;
+    const lanes = shuffle(range(laneAt('L', w), laneAt('R', w))).filter((l) => laneClearAt(l, SPAWN - 4, SPAWN + 3));
+    if (lanes.length) add({ kind: 'power', power: pick(Object.keys(POWERS)), lane: lanes[0], z: SPAWN + 1, h: 0.55 });
   }
 
   function burst(x, z, h, n, color, spd = 3, life = 0.6) {
@@ -449,11 +455,6 @@
       S.parts.push({ x, z, h, vx: rand(-0.5, 0.5) * spd * 0.4, vz: rand(-0.5, 0.5) * spd, vh: rand(0.2, 1) * spd, life, max: life, color });
     }
     if (S.parts.length > 240) S.parts.splice(0, S.parts.length - 240);
-  }
-
-  function poof(o) {
-    o.dead = true;
-    if (o.kind !== 'coin') burst(o.lane, o.z + o.len / 2, (o.h || 0.4) / 2, 8, C.pink, 2, 0.4);
   }
 
   function smash(o) {
@@ -484,6 +485,41 @@
     toast('NEAR MISS +' + 30 * mult(), C.cyan); sfx.near();
   }
 
+  // First hit: you're knocked down to half speed and damaged for HIT_WINDOW s. Hit again in that time: wrecked.
+  function hit(o) {
+    if (S.t - S.lastHitT < HIT_WINDOW) { crash(); return; }
+    S.lastHitT = S.t; S.invuln = 1.5; S.hitSlowT = HIT_SLOW_T; S.speed *= 0.5; S.boostT = 0;
+    S.shake = 0.35; S.flash = 0.25;
+    burst(S.px, 0.6, S.y + 0.3, 16, C.orange, 5, 0.6);
+    exitObj(o); // whatever you hit is knocked out of the way
+    toast('HIT! ONE MORE = WRECKED', C.red); sfx.hit();
+  }
+
+  // Remove something without popping: it slides off the nearer side of the road and fades out.
+  function exitObj(o) {
+    if (o.exiting) return;
+    const mid = (laneAt('L', S.dist + o.z) + laneAt('R', S.dist + o.z)) / 2;
+    o.exiting = EXIT_T; o.exitDir = o.lane < mid ? -1 : 1; delete o.mergeTo;
+    for (const c of S.objs) if (c.ride === o) { c.exiting = EXIT_T; c.exitDir = o.exitDir; }
+  }
+
+  // No impossible walls: if every lane is blocked at about the same distance, the furthest vehicle takes an exit.
+  function fairness() {
+    const solids = S.objs.filter((o) => !o.dead && !o.exiting && SOLID.has(o.kind) && o.kind !== 'kicker' && o.kind !== 'ramp');
+    for (let z = 2; z < SPAWN; z += 1) {
+      const w = S.dist + z, L = laneAt('L', w), R = laneAt('R', w), hits = [];
+      for (let l = L; l <= R; l++) {
+        const b = solids.find((o) => o.z < z + 1.5 && o.z + o.len > z - 1.5 && (Math.abs(o.lane - l) < 0.8 || o.mergeTo === l));
+        if (!b) break;
+        hits.push(b);
+      }
+      if (hits.length < R - L + 1) continue;
+      const vehicles = hits.filter((o) => VEHICLE.has(o.kind)), pool = vehicles.length ? vehicles : hits;
+      exitObj(pool.reduce((a, b) => (b.z > a.z ? b : a)));
+      return;
+    }
+  }
+
   function crash() {
     S.mode = 'over'; S.overAt = performance.now(); S.shake = 0.45; S.flash = 0.35;
     for (const c of [C.pink, C.cyan, C.yellow]) burst(S.px, 0.3, S.y + 0.3, 14, c, 7, 1);
@@ -494,7 +530,7 @@
 
   // Faster traffic queues behind slower traffic instead of driving through it.
   function convoy() {
-    const v = S.objs.filter((o) => !o.dead && VEHICLE.has(o.kind)).sort((a, b) => a.z - b.z);
+    const v = S.objs.filter((o) => !o.dead && !o.exiting && VEHICLE.has(o.kind)).sort((a, b) => a.z - b.z);
     for (let i = 0; i < v.length; i++) {
       for (let j = i + 1; j < v.length; j++) {
         if (Math.round(v[j].lane) !== Math.round(v[i].lane)) continue;
@@ -519,11 +555,11 @@
     // Traffic never drives through things on the road (that used to hide them until the last moment):
     // it changes lanes around cones, lane-end boards and stopped cars, or brakes to a stop behind them.
     for (const o of S.objs) {
-      if (o.dead || !VEHICLE.has(o.kind)) continue;
+      if (o.dead || o.exiting || !VEHICLE.has(o.kind)) continue;
       const front = o.z + o.len;
       let gap = Infinity;
       for (const b of S.objs) {
-        if (b === o || b.dead || Math.abs(b.lane - o.lane) > 0.75 || !(b.kind === 'cones' || b.kind === 'barrier' || b.kind === 'kicker' || b.stopped)) continue;
+        if (b === o || b.dead || b.exiting || Math.abs(b.lane - o.lane) > 0.75 || !(b.kind === 'cones' || b.kind === 'barrier' || b.kind === 'kicker' || b.stopped)) continue;
         if (b.z > front - 0.5) gap = Math.min(gap, b.z - front);
       }
       if (gap > 16) {
@@ -537,6 +573,7 @@
     }
     for (const o of S.objs) {
       if (o.mergeTo === undefined) continue;
+      if (o.signal > 0) { o.signal -= dt; continue; }
       o.lane = approach(o.lane, o.mergeTo, dt * 1.3);
       if (o.lane === o.mergeTo) delete o.mergeTo;
     }
@@ -581,7 +618,7 @@
     // Solid things: drive up onto what's low enough (ramps, roofs), crash into what isn't.
     let ground = 0, on = null;
     for (const o of S.objs) {
-      if (o.dead || !SOLID.has(o.kind)) continue;
+      if (o.dead || o.exiting || !SOLID.has(o.kind)) continue;
       if (Math.abs(S.px - o.lane) >= HALF_W + o.w / 2) continue;
       const sF = surf(o, HALF_LEN - o.z), sC = surf(o, -o.z), sB = surf(o, -HALF_LEN - o.z);
       const top = Math.max(sF, sC, sB);
@@ -590,7 +627,9 @@
         if (S.pw.nitro > 0 || (S.boostT > 0 && LIGHT.has(o.kind))) { smash(o); continue; }
         if (S.invuln > 0) continue;
         if (S.pw.shield > 0) { S.pw.shield = 0; S.invuln = 1.2; smash(o); toast('SHIELD SAVED YOU', C.mint); continue; }
-        crash(); return;
+        hit(o);
+        if (S.mode !== 'play') return;
+        continue;
       }
       if (top > ground) { ground = top; on = o; }
     }
@@ -661,7 +700,8 @@
     if (S.mode !== 'play') return;
     S.t += dt;
     S.base = baseSpeed(S.t);
-    const target = S.base * (S.boostT > 0 ? BOOST_MULT : 1) * (S.pw.nitro > 0 ? NITRO_MULT : 1) * (S.brakeT > 0 ? BRAKE_MULT : 1);
+    const target = S.base * (S.boostT > 0 ? BOOST_MULT : 1) * (S.pw.nitro > 0 ? NITRO_MULT : 1) * (S.brakeT > 0 ? BRAKE_MULT : 1) * (S.hitSlowT > 0 ? 0.6 : 1);
+    S.hitSlowT = Math.max(0, S.hitSlowT - dt);
     S.speed += (target - S.speed) * Math.min(1, dt * (target > S.speed ? 2.5 : 4));
     S.boostT = Math.max(0, S.boostT - dt);
     S.brakeT = Math.max(0, S.brakeT - dt);
@@ -679,6 +719,11 @@
     else if ((S.nextEvent -= dt) <= 0 && S.t > 20) startEvent();
     if (zoneIndex(S.dist) !== S.zone) { S.zone = zoneIndex(S.dist); S.zoneBanner = { name: zoneAt(S.dist).name, t: 2.4 }; }
     magnet(dt);
+    for (const o of S.objs) {
+      if (!o.exiting) continue;
+      o.lane += o.exitDir * dt * 2.5;
+      if ((o.exiting -= dt) <= 0) o.dead = true;
+    }
     convoy();
     trafficMerges(dt);
     pruneRoad();
@@ -687,9 +732,11 @@
     const steps = Math.max(1, Math.ceil((S.speed * dt) / 0.3));
     for (let i = 0; i < steps && S.mode === 'play'; i++) step(dt / steps);
     if (S.mode !== 'play') return;
+    fairness();
 
     engine(true);
     if (eng) eng.o.frequency.setTargetAtTime((38 + S.speed * 2.6) * (0.4 + 0.6 * S.slow), actx.currentTime, 0.1);
+    if (S.t - S.lastHitT < HIT_WINDOW && Math.random() < 0.35) burst(S.px + rand(-0.2, 0.2), 0.8, S.y + 0.6, 1, '#8f86b8', 1, 0.7); // damage smoke
     if (S.trickAnim) burst(S.px + rand(-0.4, 0.4), 0.2, S.y + rand(0, 0.6), 1, pick([C.pink, C.cyan, C.yellow]), 2, 0.4);
     S.bounce += Math.sin(S.anim * 31) * 0.0015 * (S.speed / 20); // road buzz
     const steerAmt = S.lane - S.px;
@@ -805,7 +852,11 @@
   function blinker(f, o, b) {
     if ((o.mergeTo === undefined && !o.stopped) || Math.sin(S.anim * 14) < 0) return;
     const sides = o.stopped ? [-1, 1] : [Math.sign(o.mergeTo - o.lane)]; // stopped = hazard lights
-    for (const side of sides) frect(f, side * (o.w / 2) - 0.07, b, side * (o.w / 2) + 0.07, b + 0.09, C.orange);
+    for (const side of sides) {
+      const ga = ctx.globalAlpha;
+      ctx.globalAlpha = ga * 0.35; frect(f, side * (o.w / 2) - 0.13, b - 0.04, side * (o.w / 2) + 0.13, b + 0.15, C.orange);
+      ctx.globalAlpha = ga; frect(f, side * (o.w / 2) - 0.08, b, side * (o.w / 2) + 0.08, b + 0.11, C.yellow);
+    }
   }
 
   function chevronRow(cx, cy, dir, n, size, gap) {
@@ -844,7 +895,7 @@
   }
 
   function drawGrid() {
-    const zf = FAR + 8;
+    const zf = SPAWN + 2;
     ctx.strokeStyle = zoneAt(S.dist).grid; ctx.lineWidth = 1.5;
     ctx.globalAlpha = 0.35;
     ctx.beginPath();
@@ -860,7 +911,7 @@
   }
 
   function drawRoad() {
-    const zf = FAR + 8, zs = [], eL = [], eR = [];
+    const zf = SPAWN + 2, zs = [], eL = [], eR = [];
     for (let z = NEAR; z <= zf; z += 2) { zs.push(z); eL.push(edgeAt('L', S.dist + z)); eR.push(edgeAt('R', S.dist + z)); }
     const n = zs.length;
 
@@ -906,6 +957,26 @@
         for (let i = 0; i < n; i++) ctx.lineTo(X(e[i], zs[i]), Y(zs[i]));
         ctx.stroke();
       }
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  // A flashing arrow painted flat on the lane a car is moving into.
+  function drawMergeArrows() {
+    if (Math.sin(S.anim * 14) < 0) return;
+    ctx.strokeStyle = C.orange;
+    for (const o of S.objs) {
+      if (o.dead || o.exiting || o.mergeTo === undefined || o.z + o.len < NEAR + 1) continue;
+      const dir = Math.sign(o.mergeTo - o.lane) || Math.sign(o.mergeTo - Math.round(o.lane)) || 1, nl = o.mergeTo;
+      const zc = Math.max(o.z + o.len / 2, NEAR + 1);
+      ctx.globalAlpha = clamp((SPAWN - zc) / 12, 0, 1) * 0.95;
+      ctx.lineWidth = Math.max(2, 11 * scaleAt(zc));
+      ctx.beginPath();
+      for (const k of [0, 1]) {
+        const bx = nl - dir * 0.32 + dir * k * 0.3;
+        ctx.moveTo(X(bx, zc - 0.8), Y(zc - 0.8)); ctx.lineTo(X(bx + dir * 0.28, zc), Y(zc)); ctx.lineTo(X(bx, zc + 0.8), Y(zc + 0.8));
+      }
+      ctx.stroke();
     }
     ctx.globalAlpha = 1;
   }
@@ -1059,7 +1130,7 @@
   }
 
   function drawObj(o) {
-    const a = clamp((FAR + 5 - o.z) / 10, 0, 1); // fade in from the horizon instead of popping
+    const a = clamp((SPAWN - o.z) / 12, 0, 1) * (o.exiting ? clamp(o.exiting / EXIT_T, 0, 1) : 1); // fade in from the horizon, fade out on exit
     if (a <= 0) return;
     ctx.globalAlpha = a;
     const zc = Math.max(o.z, NEAR), s = scaleAt(zc), u = UNIT_PX * s;
@@ -1267,6 +1338,14 @@
     if (S.mode !== 'title') {
       text(String(Math.floor(S.score)), 22, 30, 26, C.text, 800, 'left');
       if (mult() > 1) text(`x${mult()}`, 22, 60, 20, C.yellow, 800, 'left', 'italic ');
+      if (S.t - S.lastHitT < HIT_WINDOW && S.mode === 'play') {
+        const left = HIT_WINDOW - (S.t - S.lastHitT), on = left > 5 || Math.sin(S.ui * 12) > 0;
+        ctx.globalAlpha = 0.9; ctx.fillStyle = '#2a0808'; rrect(18, 88, 150, 30, 10); ctx.fill();
+        ctx.strokeStyle = C.red; ctx.lineWidth = 2; ctx.stroke(); ctx.globalAlpha = 1;
+        text('DAMAGED', 28, 101, 15, on ? C.red : C.orange, 900, 'left', 'italic ');
+        text(String(Math.ceil(left)), 158, 101, 15, C.text, 800, 'right');
+        ctx.fillStyle = C.red; ctx.fillRect(26, 112, 134 * clamp(left / HIT_WINDOW, 0, 1), 3);
+      }
       if (S.chain) {
         text('STYLE', 62, 60, 13, C.mint, 800, 'left', 'italic ');
         ctx.fillStyle = '#123'; ctx.fillRect(22, 74, 90, 5);
@@ -1350,7 +1429,7 @@
         text(v, CX - 54, 242 + i * 32, 17, C.dim, 500, 'left');
       });
       text('Hit pink TRICK ramps, then swipe the combo!', CX, 380, 16, C.pink, 800);
-      text('Lanes open and end. Watch for LANE ENDS.', CX, 404, 16, C.yellow, 700);
+      text('One hit slows you. Two hits in a minute: wrecked.', CX, 404, 16, C.yellow, 700);
       ctx.globalAlpha = blink; text('Pinch to start', CX, 452, 28, C.text, 800); ctx.globalAlpha = 1;
       if (S.best) text(`Best ${S.best}`, CX, 494, 18, C.yellow, 600);
       text(BUILD, CX + 232, 514, 12, C.dim, 600, 'right');
@@ -1378,6 +1457,7 @@
     drawSky();
     drawGrid();
     drawRoad();
+    drawMergeArrows();
     drawRoadside();
     const live = S.objs.filter((o) => !o.dead).sort((a, b) => b.z - a.z);
     const under = (o) => o.z > 0 || o === S.onObj;
@@ -1394,7 +1474,7 @@
 
   // Desktop testing hook (not used by the game itself).
   window.__laneRunner = S;
-  window.__laneRunnerDebug = { reset, update, render, addCar, addTruck, add, addKicker, startEvent, zoneAt, scheduleLaneChange, laneAt, edgeAt, baseSpeed };
+  window.__laneRunnerDebug = { reset, update, render, addCar, addTruck, add, addKicker, startEvent, zoneAt, fairness, scheduleLaneChange, laneAt, edgeAt, baseSpeed };
 
   // ---------- loop: capped at ~30 fps to match the 30 Hz panel ----------
   let raf = 0, last = 0;

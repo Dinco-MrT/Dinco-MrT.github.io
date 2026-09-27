@@ -40,6 +40,11 @@ A vaporwave freeway racer, seen from behind your car in pseudo-3D.
 - **Zones.** Every 900 units the terrain changes, cycling through SUNSET STRIP (palms), NEON CITY (flat-shaded towers), DESERT NIGHT (cacti and rocks) and HYPER TUNNEL (neon rings overhead; the sky fades out). Each has its own grid and road-edge colours and an "ENTERING …" banner.
 - **Events.** Every 35–55 s (after 20 s) one runs with a HUD pill and timer: RUSH HOUR (much denser traffic, 18 s), COIN RUSH (coins in every free lane, 14 s) or STUNT ZONE (a trick ramp every ~50–70 units and lighter traffic, 16 s).
 
+- **Hits, not instant death.** Hitting something knocks it out of the way, halves your speed (and caps it at 60% for 2.5 s) and gives 1.5 s of invulnerability. A red **DAMAGED** countdown runs for 60 s while your car smokes. A second hit inside that window wrecks you (`hit()`, `HIT_WINDOW`).
+- **Readable traffic.** Before any lane change a vehicle indicates for 0.8 s (`SIGNAL_T`, glowing blinkers), and a flashing orange double chevron is painted flat on the lane it's moving into (`drawMergeArrows`).
+- **Fairness (no impossible scenarios).** Every frame, after physics, `fairness()` scans ahead. If every usable lane is blocked at about the same distance (±1.5 units; car carriers and trick ramps count as passable), the furthest vehicle takes an exit. This was mostly rolling roadblocks: cars from different spawn rows drifting side by side, which blocked about 7% of frames before the fix and 0 after.
+- **No popping.** Everything spawns at `SPAWN` (= FAR + 10), fully transparent, and fades in over 12 units. Anything removed during play (knocked-out, fairness exits, trick landing clears) uses `exitObj()`: it slides off the nearer side of the road and fades out, and is non-solid while it does. Nothing vanishes instantly any more.
+
 ### Controls (glasses input = key events)
 
 The Neural Band and temple touchpad send swipes as `ArrowLeft/Right/Up/Down` and a pinch as `Enter`. Always match on `e.key`, because device events have an empty `code`. Leave `Escape` alone: it's the system Back.
