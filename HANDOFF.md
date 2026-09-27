@@ -32,13 +32,21 @@ A vaporwave freeway racer, seen from behind your car in pseudo-3D.
   - SCORE 2X doubles scoring.
 - **Scoring.** Distance counts, coins are +10, near misses +30 (overtaking a vehicle in an adjacent lane), and smashes +25. Everything doubles under 2X. The best score is saved in `localStorage` under `laneRunner.vaporBest`.
 
+- **Trick ramps (core loop).** Hot-pink kickers with yellow chevrons appear in free lanes about every 380–600 units, with a coin trail leading on and a coin arc along the flight path. Driving over one launches you: time slows to 0.3×, the world dims, the camera rises with the car (`S.camH`), and a combo of 3–5 arrow icons appears at the top (more steps later in a run). Traffic in your lane scatters from the landing zone.
+  - Each correct swipe does a trick: ← BARREL ROLL, → CORKSCREW, ↑ KICKFLIP (hop and flip), ↓ BOP 360 (spin and squash). Tricks score 100 × step × multiplier, and the icons light up with an `i/n` count and an air-time bar.
+  - Finishing the combo is PERFECT: +500 × multiplier, +1 boost segment, and +1 **style chain**.
+  - A wrong swipe is COMBO BROKEN: the chain resets. No input just lands (TOO SLOW).
+  - The style chain multiplies all scoring (x1 + chain, up to x5 on its own, ×2 more with the 2X power-up) and drains after 30 s without a trick.
+- **Zones.** Every 900 units the terrain changes, cycling through SUNSET STRIP (palms), NEON CITY (flat-shaded towers), DESERT NIGHT (cacti and rocks) and HYPER TUNNEL (neon rings overhead; the sky fades out). Each has its own grid and road-edge colours and an "ENTERING …" banner.
+- **Events.** Every 35–55 s (after 20 s) one runs with a HUD pill and timer: RUSH HOUR (much denser traffic, 18 s), COIN RUSH (coins in every free lane, 14 s) or STUNT ZONE (a trick ramp every ~50–70 units and lighter traffic, 16 s).
+
 ### Controls (glasses input = key events)
 
 The Neural Band and temple touchpad send swipes as `ArrowLeft/Right/Up/Down` and a pinch as `Enter`. Always match on `e.key`, because device events have an empty `code`. Leave `Escape` alone: it's the system Back.
 
 | Input | Action |
 |---|---|
-| ← / → | Change lanes. You can't leave the road; hitting the edge gives a bump and a wobble. |
+| ← / → | Change lanes. You can't leave the road; hitting the edge gives a bump and a wobble. In the air during a trick combo, all four swipes are combo inputs instead. |
 | ↑ (swipe forward) | Boost (uses one charged segment) |
 | ↓ | Brake (0.7 s at 60% speed) |
 | Pinch | Horn: the vehicle ahead in your lane tries to move over. Also start / restart / resume. |

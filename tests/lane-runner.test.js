@@ -103,7 +103,7 @@ const path = require('path');
       d.reset(); s.invuln = 1e9;
       for (let i = 0; i < 30 * 120; i++) {
         d.update(1 / 30);
-        const statics = s.objs.filter((o) => !o.dead && (o.kind === 'cones' || o.kind === 'barrier') && o.z < 64);
+        const statics = s.objs.filter((o) => !o.dead && (o.kind === 'cones' || o.kind === 'barrier' || o.kind === 'kicker') && o.z < 64);
         for (const v of s.objs) {
           if (v.dead || !['car', 'truck', 'ramp'].includes(v.kind)) continue;
           for (const c of statics) if (Math.abs(v.lane - c.lane) < 0.6 && v.z < c.z + c.len && v.z + v.len > c.z && v.z < 60) n++;
@@ -126,6 +126,53 @@ const path = require('path');
   await fresh(); await p.evaluate(() => { __laneRunner.boost = 3; __laneRunnerDebug.addCar(0, 14); });
   await key('ArrowUp'); await run(3);
   ok((await S()).mode === 'over', 'boost does not smash cars');
+
+  // Trick ramps: launch into slow motion and swipe the combo.
+  const KEY = { left: 'ArrowLeft', right: 'ArrowRight', up: 'ArrowUp', down: 'ArrowDown' };
+  const toRamp = async () => {
+    await fresh();
+    await p.evaluate(() => { __laneRunner.objs = []; __laneRunnerDebug.addKicker(0, 8); __laneRunner.objs = __laneRunner.objs.filter((o) => o.kind === 'kicker'); __laneRunnerDebug.addCar(0, 25); });
+    for (let i = 0; i < 90 && !(await p.evaluate(() => !!__laneRunner.trick)); i++) await run(1 / 30);
+    await run(0.3);
+  };
+  await toRamp();
+  let tr = await p.evaluate(() => ({ trick: !!__laneRunner.trick, slow: __laneRunner.slow, y: __laneRunner.y, car: __laneRunner.objs.some((o) => o.kind === 'car') }));
+  ok(tr.trick && tr.slow < 0.6 && tr.y > 1, 'trick ramp launches into slow motion ' + JSON.stringify(tr));
+  ok(!tr.car, 'traffic clears out of the landing zone');
+  await shot('8-trick');
+  const seq = await p.evaluate(() => __laneRunner.trick.seq);
+  for (const d of seq) { await key(KEY[d]); await run(0.05); }
+  await shot('9-trick-done');
+  tr = await p.evaluate(() => ({ state: __laneRunner.trick.state, chain: __laneRunner.chain, boost: __laneRunner.boost, lane: __laneRunner.lane }));
+  ok(tr.state === 'done' && tr.chain === 1 && tr.boost >= 1.9 && tr.lane === 0, 'perfect combo: style chain + boost, no steering in the air ' + JSON.stringify(tr));
+  await run(3);
+  ok((await S()).mode === 'play' && (await S()).y === 0, 'lands safely after a perfect combo');
+
+  await toRamp();
+  await p.evaluate(() => { __laneRunner.chain = 2; });
+  const wrong = await p.evaluate(() => ({ left: 'right', right: 'left', up: 'down', down: 'up' })[__laneRunner.trick.seq[0]]);
+  await key(KEY[wrong]); await run(0.05);
+  tr = await p.evaluate(() => ({ state: __laneRunner.trick.state, chain: __laneRunner.chain }));
+  ok(tr.state === 'fail' && tr.chain === 0, 'wrong swipe breaks the combo and the style chain ' + JSON.stringify(tr));
+  await run(3); ok((await S()).mode === 'play', 'lands safely after a broken combo');
+
+  await toRamp(); await run(6);
+  tr = await p.evaluate(() => ({ trick: __laneRunner.trick && __laneRunner.trick.landed, slow: __laneRunner.slow, mode: __laneRunner.mode }));
+  ok(tr.mode === 'play' && tr.slow === 1, 'no input: you just land and time speeds back up ' + JSON.stringify(tr));
+
+  // Zones and events.
+  await fresh();
+  const zones = [];
+  for (let zi = 0; zi < 4; zi++) {
+    await p.evaluate((zi) => { __laneRunner.dist = zi * 900 + 200; __laneRunnerDebug.update(1 / 30); }, zi);
+    zones.push(await p.evaluate(() => __laneRunnerDebug.zoneAt(__laneRunner.dist).name));
+    await shot('z' + zi + '-' + zones[zi].split(' ')[0].toLowerCase());
+  }
+  ok(new Set(zones).size === 4, 'four different zones: ' + zones.join(', '));
+  ok(await p.evaluate(() => !!__laneRunner.zoneBanner), 'zone change shows a banner');
+  await fresh();
+  const ev = await p.evaluate(() => { const s = __laneRunner; s.t = 30; s.nextEvent = 0; __laneRunnerDebug.update(1 / 30); return s.event && s.event.kind; });
+  ok(!!ev, 'events start on their own: ' + ev);
 
   // Trucks.
   await fresh(); await p.evaluate(() => __laneRunnerDebug.addTruck(0, 5, 'ramp'));
