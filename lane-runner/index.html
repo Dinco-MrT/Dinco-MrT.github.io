@@ -26,13 +26,13 @@
 <script>
 'use strict';
 (() => {
-  const W = 600, H = 600, BUILD = 'v7';
+  const W = 600, H = 600, BUILD = 'v8';
   const ctx = document.getElementById('c').getContext('2d');
 
   // ---------- tuning ----------
   const START_SPEED = 12, EARLY_ACCEL = 0.22, LATE_ACCEL = 0.07, MAX_SPEED = 42; // world units / s, keeps climbing
   const KMH = 8.5;                                     // world units / s → km/h on the speedo
-  const BOOST_MULT = 1.45, BOOST_T = 2.5, NITRO_MULT = 1.6, BRAKE_MULT = 0.6, BRAKE_T = 0.7;
+  const BOOST_MULT = 1.6, BOOST_T = 2.5, NITRO_MULT = 1.6, BRAKE_MULT = 0.6, BRAKE_T = 0.7;
   const GRAVITY = 16, STEP = 0.22;                     // STEP: tallest ledge the car drives up (ramps)
   const LANE_SPEED = 7;                                // lanes / s
   const MIN_LANES = 3, MAX_LANES = 6, TAPER = 12;      // freeway lanes come and go; tapers are TAPER units long
@@ -117,9 +117,14 @@
     objs: [], parts: [], sinceRow: 0, gapNext: 14, nextPower: 8, nextLane: 160,
     cam: 0, camH: 0, shake: 0, flash: 0, anim: 0, ui: 0, wobble: 0, bounce: 0, overAt: 0, toast: null, streak: 0, streakT: 0,
     trick: null, trickAnim: null, slow: 1, chain: 0, chainT: 0, nextKick: 180, event: null, nextEvent: 40, zone: 0, zoneBanner: null,
-    lastHitT: -1e9, hitSlowT: 0,
+    lastHitT: -1e9, hitSlowT: 0, perfects: 0, squash: 0, hud: freshHud(), flyers: [], rings: [],
     best: loadBest(), newBest: false,
   };
+
+  // Animated HUD state (real time): rolling score, pops, slide-ins.
+  function freshHud() { return { score: 0, lastScore: 0, scorePop: 0, coinPop: 0, kick: 0, in: 0, overT: 0, dot: 0, dmgPop: 0, ready: 0, lastSeg: 1, flash: 0 }; }
+  const easeOut = (t) => 1 - Math.pow(1 - clamp(t, 0, 1), 3);
+  const easeBack = (t) => { t = clamp(t, 0, 1); const c = 1.7; return 1 + (c + 1) * Math.pow(t - 1, 3) + c * Math.pow(t - 1, 2); };
 
   function loadBest() { try { return Number(localStorage.getItem('laneRunner.vaporBest')) || 0; } catch { return 0; } }
   function saveBest(v) { try { localStorage.setItem('laneRunner.vaporBest', String(v)); } catch { /* storage unavailable */ } }
@@ -134,8 +139,9 @@
       boost: 1, boostT: 0, brakeT: 0, hornT: 0, pw: {}, invuln: 0, objs: [], parts: [],
       sinceRow: 0, gapNext: 14, nextPower: 8, nextLane: 160, toast: null, streak: 0, streakT: 0, newBest: false,
       trick: null, trickAnim: null, slow: 1, chain: 0, chainT: 0, nextKick: 180, event: null, nextEvent: 40, zone: 0, zoneBanner: null,
-      lastHitT: -1e9, hitSlowT: 0,
+      lastHitT: -1e9, hitSlowT: 0, perfects: 0, squash: 0, hud: freshHud(), flyers: [], rings: [],
     });
+    toast('GO!', C.mint);
   }
 
   // ---------- the freeway: lanes open and end along the road ----------
@@ -165,6 +171,9 @@
     const w = S.dist + SPAWN + 40;
     const sides = shuffle(['L', 'R']).filter((sd) => { const ch = S.road[sd].ch; return !ch.length || w - ch[ch.length - 1].w > TAPER + 40; });
     if (!sides.length) return;
+    // End the lane with the least traffic in it, so fewer cars have to merge out.
+    const busy = (sd) => S.objs.filter((o) => !o.dead && VEHICLE.has(o.kind) && Math.round(o.lane) === lastLane(sd)).length;
+    if (!open) sides.sort((a, b) => busy(a) - busy(b));
     const side = sides[0], d = dirOf(side), from = lastLane(side), to = open ? from + d : from - d;
     S.road[side].ch.push({ w, from, to });
     if (open) add({ kind: 'sign', side, z: w - S.dist + TAPER * 0.5, text: 'NEW LANE', col: C.mint, dir: d });
@@ -211,7 +220,8 @@
   const sfx = {
     swish: () => tone(900, 600, 0.06, 'triangle', 0.05),
     bump: () => tone(120, 80, 0.12, 'square', 0.05),
-    boost: () => { tone(180, 900, 0.35, 'sawtooth', 0.05); tone(360, 1800, 0.35, 'triangle', 0.03); },
+    boost: () => { tone(90, 38, 0.6, 'sine', 0.14); tone(180, 900, 0.35, 'sawtooth', 0.06); tone(360, 1800, 0.45, 'triangle', 0.035); },
+    ready: () => tone(1200, 1800, 0.09, 'triangle', 0.035),
     brake: () => tone(700, 300, 0.2, 'triangle', 0.03),
     horn: () => { tone(392, 392, 0.28, 'square', 0.035); tone(494, 494, 0.28, 'square', 0.03); },
     deny: () => tone(150, 110, 0.18, 'square', 0.05),
@@ -280,7 +290,12 @@
   function boost() {
     if (S.boostT > 0) return;
     if (S.boost < 1) { sfx.deny(); toast('BOOST CHARGING', C.dim); return; }
-    S.boost -= 1; S.boostT = BOOST_T; S.shake = 0.12; sfx.boost();
+    S.boost -= 1; S.boostT = BOOST_T; sfx.boost();
+    // Make it hit: an instant jolt of speed, a FOV punch, a shockwave ring, shake and a flash.
+    S.speed = Math.max(S.speed * 1.3, S.base * 1.3);
+    S.hud.kick = 1; S.hud.flash = 1; S.shake = 0.3;
+    ring(C.cyan); toast('BOOST!', C.cyan);
+    burst(S.px, -0.7, S.y + 0.2, 18, C.cyan, 6, 0.5);
   }
 
   function brake() { S.brakeT = BRAKE_T; S.boostT = 0; sfx.brake(); }
@@ -314,19 +329,21 @@
   function trickInput(d) {
     const T = S.trick;
     if (d !== T.seq[T.i]) {
-      T.state = 'fail'; S.chain = 0; sfx.deny();
+      T.state = 'fail'; T.failAt = S.ui; S.chain = 0; sfx.deny();
       return;
     }
     T.i++;
     const pts = 100 * T.i * mult();
     S.score += pts;
     S.trickAnim = { dir: d, t: 0 };
+    (T.hitAt = T.hitAt || [])[T.i - 1] = S.ui;
     toast(`${TRICKS[d]} +${pts}`, C.cyan);
     burst(S.px, 0.3, S.y + 0.3, 10, pick([C.pink, C.cyan, C.yellow]), 4, 0.5);
     sfx.trick(T.i);
     if (T.i === T.seq.length) {
       T.state = 'done';
-      S.chain = Math.min(4, S.chain + 1); S.chainT = CHAIN_T;
+      S.chain = Math.min(4, S.chain + 1); S.chainT = CHAIN_T; S.perfects++;
+      ring(C.mint);
       const bonus = 500 * mult();
       S.score += bonus; S.boost = Math.min(3, S.boost + 1);
       toast(`PERFECT! +${bonus}`, C.mint);
@@ -337,7 +354,7 @@
   function landTrick() {
     const T = S.trick;
     T.landed = true; T.hide = 1.3;
-    S.trickAnim = null;
+    S.trickAnim = null; S.squash = 1;
     S.shake = 0.2; S.bounce = -0.1;
     burst(S.px, 0, 0.1, 20, T.state === 'done' ? C.mint : C.cyan, 5, 0.6);
     sfx.land();
@@ -411,6 +428,16 @@
     const all = range(laneAt('L', w), laneAt('R', w));
     const open = shuffle(all.filter((l) => laneClearAt(l, SPAWN - 10, SPAWN + 20)));
     if (!open.length) return;
+    // Traffic only goes in lanes that don't end soon, and cones / ramps only go in lanes with no traffic
+    // ahead that would have to swerve around them: both used to cause most of the lane changes.
+    const lasting = (l) => l >= laneAt('L', w + 150) && l <= laneAt('R', w + 150);
+    // A lane is quiet for a static placed at zs if every vehicle ahead in it will be overtaken by you before it could reach zs.
+    const quiet = (l, zs = SPAWN + 8) => !S.objs.some((o) => {
+      if (o.dead || o.exiting || !VEHICLE.has(o.kind) || o.z < -2 || !(Math.abs(o.lane - l) < 0.75 || o.mergeTo === l)) return false;
+      const passed = (o.z + o.len) / Math.max(0.05, 1 - o.frac), reach = (zs - o.z - o.len) / Math.max(0.01, o.frac);
+      return passed * 1.3 > reach;
+    });
+    open.sort((a, b) => lasting(b) - lasting(a));
     const ev = S.event && S.event.kind;
     let dens = Math.min(0.6, 0.25 + S.t / 240);
     if (ev === 'rush') dens = Math.min(0.85, dens + 0.3);
@@ -418,7 +445,7 @@
     let n = 0;
     for (let i = 0; i < open.length; i++) if (Math.random() < dens) n++;
     if (n === 0 && Math.random() < 0.6) n = 1;
-    n = Math.min(n, all.length - 1, open.length); // always leave a way through
+    n = Math.min(n, all.length - 1, open.filter(lasting).length); // always leave a way through
     for (let i = 0; i < n; i++) {
       const l = open[i], r = Math.random();
       if (r < 0.14) addTruck(l, SPAWN, 'ramp');
@@ -429,18 +456,18 @@
     }
     const rest = open.slice(n);
     if (S.nextKick <= 0 && rest.length) {
-      const l = rest.find((k) => laneAt('L', w + 30) <= k && k <= laneAt('R', w + 30));
+      const l = rest.find((k) => laneAt('L', w + 30) <= k && k <= laneAt('R', w + 30) && quiet(k));
       if (l !== undefined) {
         addKicker(l, SPAWN + 8);
         rest.splice(rest.indexOf(l), 1);
-        S.nextKick = ev === 'stunt' ? rand(45, 70) : rand(380, 600);
+        S.nextKick = ev === 'stunt' ? rand(45, 70) : rand(300, 470);
       }
     }
     if (ev === 'coins') { for (const l of rest) coinLine(l, SPAWN + 1, 6); return; }
     if (rest.length) {
       const r = Math.random();
       if (r < 0.45) coinLine(rest[0], SPAWN + 1, 6);
-      else if (r < 0.55 && S.t > 10) add({ kind: 'cones', lane: rest[0], z: SPAWN + 2, len: 0.5, w: 0.9, h: 0.4 });
+      else if (r < 0.55 && S.t > 10 && quiet(rest[0])) add({ kind: 'cones', lane: rest[0], z: SPAWN + 2, len: 0.5, w: 0.9, h: 0.4 });
     }
   }
 
@@ -465,11 +492,17 @@
   }
 
   function toast(text, color) { S.toast = { text, color, t: 1.4 }; }
+  function ring(color) { S.rings.push({ t: 0, color }); }
+  // A coin that flies from where you grabbed it into the HUD counter.
+  function flyCoin(o) {
+    if (S.flyers.length < 12) S.flyers.push({ x: X(o.lane, Math.max(o.z, NEAR)), y: Y(Math.max(o.z, NEAR), o.h), t: 0 });
+  }
 
   function collectCoin(o) {
     S.coins++; S.streak++; S.streakT = 0.6;
     S.score += 10 * mult(); S.boost = Math.min(3, S.boost + 0.06);
     burst(o.lane, o.z, o.h, 4, C.yellow, 2, 0.35);
+    flyCoin(o);
     sfx.coin();
   }
 
@@ -477,6 +510,7 @@
     if (kind === 'turbo') S.boost = 3; else S.pw[kind] = POWERS[kind].dur;
     toast(POWERS[kind].label, POWERS[kind].color);
     burst(o.lane, o.z, o.h, 14, POWERS[kind].color, 4, 0.6);
+    ring(POWERS[kind].color);
     sfx.power();
   }
 
@@ -492,6 +526,7 @@
     S.shake = 0.35; S.flash = 0.25;
     burst(S.px, 0.6, S.y + 0.3, 16, C.orange, 5, 0.6);
     exitObj(o); // whatever you hit is knocked out of the way
+    S.hud.dmgPop = 1;
     toast('HIT! ONE MORE = WRECKED', C.red); sfx.hit();
   }
 
@@ -641,7 +676,7 @@
       S.y += S.vy * h;
       if (S.y <= ground) {
         if (S.trick && !S.trick.landed) landTrick();
-        else if (S.vy < -5) { sfx.land(); S.bounce = -0.06; burst(S.px, -0.4, ground, 6, C.cyan, 2, 0.35); }
+        else if (S.vy < -5) { sfx.land(); S.bounce = -0.06; S.squash = 0.6; burst(S.px, -0.4, ground, 6, C.cyan, 2, 0.35); }
         S.y = ground; S.vy = 0;
       }
     }
@@ -679,6 +714,25 @@
     if (S.zoneBanner && (S.zoneBanner.t -= dt) <= 0) S.zoneBanner = null;
     if (S.trickAnim && (S.trickAnim.t += dt) >= TRICK_T) S.trickAnim = null;
     if (S.trick && S.trick.landed && (S.trick.hide -= dt) <= 0) S.trick = null;
+    const Hh = S.hud;
+    if (S.score - Hh.lastScore > 40) Hh.scorePop = 1;
+    Hh.lastScore = S.score;
+    Hh.score += (S.score - Hh.score) * Math.min(1, dt * 10);
+    Hh.scorePop = Math.max(0, Hh.scorePop - dt * 3); Hh.coinPop = Math.max(0, Hh.coinPop - dt * 4);
+    Hh.kick = Math.max(0, Hh.kick - dt * 1.6); Hh.flash = Math.max(0, Hh.flash - dt * 4);
+    Hh.dmgPop = Math.max(0, Hh.dmgPop - dt * 2); Hh.ready = Math.max(0, Hh.ready - dt * 2);
+    Hh.in = S.mode === 'title' ? 0 : Math.min(1, Hh.in + dt * 2.5);
+    Hh.overT = S.mode === 'over' ? Hh.overT + dt : 0;
+    Hh.dot += (S.px - Hh.dot) * Math.min(1, dt * 12);
+    const seg = Math.floor(S.boost);
+    if (seg > Hh.lastSeg && S.mode === 'play') { Hh.ready = 1; sfx.ready(); }
+    Hh.lastSeg = seg;
+    for (const f of S.flyers) if ((f.t += dt) >= 0.45) Hh.coinPop = 1;
+    S.flyers = S.flyers.filter((f) => f.t < 0.45);
+    for (const r of S.rings) r.t += dt;
+    S.rings = S.rings.filter((r) => r.t < 0.6);
+    S.squash = Math.max(0, S.squash - dt * 4);
+
     const slowTarget = S.trick && S.trick.state === 'active' && !S.trick.landed ? SLOW : 1;
     S.slow = approach(S.slow, slowTarget, dt * 3);
     dt *= S.slow;
@@ -693,7 +747,7 @@
     const mid = (laneAt('L', S.dist) + laneAt('R', S.dist)) / 2;
     const camT = S.mode === 'title' ? Math.sin(S.anim * 0.4) * 0.6 : S.px * 0.75 + mid * 0.25;
     S.cam += (camT - S.cam) * Math.min(1, dt * 5);
-    S.D += ((S.boostT > 0 || S.pw.nitro > 0 ? 6.2 : 7) - S.D) * Math.min(1, dt * 4); // FOV kick while boosting
+    S.D += ((S.boostT > 0 || S.pw.nitro > 0 ? 5.7 : 7) - S.hud.kick * 1.2 - S.D) * Math.min(1, dt * 7); // FOV punch while boosting
     S.camH += ((S.trick && !S.trick.landed ? Math.max(0, S.y - 0.3) * 0.8 : 0) - S.camH) * Math.min(1, dt * 5);
 
     if (S.mode === 'title') { S.dist += 9 * dt; return; }
@@ -1211,6 +1265,7 @@
       else if (A.dir === 'up') { sy = Math.cos(e * Math.PI * 2); lift = Math.sin(e * Math.PI) * 45; }
       else { sx = Math.cos(e * Math.PI * 2); sy = 1 - 0.3 * Math.sin(e * Math.PI * 2); lift = -Math.sin(e * Math.PI) * 12; }
     }
+    sy *= 1 - 0.2 * S.squash; sx *= 1 + 0.12 * S.squash;
     const pcx = X(x, 0.2), pcy = Y(0.2, y + 0.3);
     ctx.save();
     ctx.translate(pcx, pcy - lift); ctx.rotate(rot); ctx.scale(sx, sy); ctx.translate(-pcx, -pcy);
@@ -1223,10 +1278,18 @@
     if (braking) { ctx.globalAlpha = ga * 0.4; frect(f, -0.44, 0.15, 0.44, 0.35, C.tail); ctx.globalAlpha = ga; }
     frect(f, -0.39, 0.2, 0.39, 0.3, braking ? '#ff6b95' : C.tail);
     if (S.boostT > 0 || S.pw.nitro > 0) {
+      const fc = S.pw.nitro > 0 ? C.orange : C.cyan, k = 1 + S.hud.kick;
+      // Afterimages of the taillight bar smear toward the camera.
+      for (let i = 1; i <= 3; i++) { ctx.globalAlpha = ga * 0.3 / i; frect(f, -0.39, 0.2 - i * 0.1, 0.39, 0.3 - i * 0.1, C.tail); }
+      ctx.globalAlpha = ga;
       for (const a of [-0.2, 0.2]) {
-        const ex = fx(f, a), ey = fy(f, 0.08), len = rand(24, 44);
-        ctx.fillStyle = S.pw.nitro > 0 ? C.orange : C.cyan;
-        ctx.beginPath(); ctx.moveTo(ex - 8, ey); ctx.lineTo(ex + 8, ey); ctx.lineTo(ex, ey + len); ctx.closePath(); ctx.fill();
+        const ex = fx(f, a), ey = fy(f, 0.08), len = rand(40, 75) * k, wd = 11 * k;
+        ctx.globalAlpha = ga * 0.35; ctx.fillStyle = fc;
+        ctx.beginPath(); ctx.arc(ex, ey, wd * 1.3, 0, Math.PI * 2); ctx.fill();
+        ctx.globalAlpha = ga; ctx.fillStyle = fc;
+        ctx.beginPath(); ctx.moveTo(ex - wd, ey); ctx.lineTo(ex + wd, ey); ctx.lineTo(ex, ey + len); ctx.closePath(); ctx.fill();
+        ctx.fillStyle = C.text;
+        ctx.beginPath(); ctx.moveTo(ex - wd * 0.4, ey); ctx.lineTo(ex + wd * 0.4, ey); ctx.lineTo(ex, ey + len * 0.55); ctx.closePath(); ctx.fill();
       }
     }
     ctx.restore();
@@ -1248,14 +1311,36 @@
   }
 
   function drawSpeedLines() {
-    if (S.mode !== 'play' || !(S.boostT > 0 || S.pw.nitro > 0 || S.speed > 30)) return;
-    ctx.strokeStyle = C.text; ctx.lineWidth = 2; ctx.globalAlpha = S.boostT > 0 || S.pw.nitro > 0 ? 0.4 : 0.18;
+    const boosting = S.boostT > 0 || S.pw.nitro > 0;
+    if (S.mode !== 'play' || !(boosting || S.speed > 30)) return;
+    const n = boosting ? 30 : 10, col = S.pw.nitro > 0 ? C.orange : C.cyan;
+    ctx.lineWidth = boosting ? 3 : 2;
     ctx.beginPath();
-    for (let i = 0; i < 12; i++) {
-      const ang = rand(0, Math.PI * 2), r0 = rand(170, 260), r1 = r0 + rand(40, 100);
+    for (let i = 0; i < n; i++) {
+      const ang = rand(0, Math.PI * 2), r0 = rand(150, 250), r1 = r0 + rand(60, 160) * (1 + S.hud.kick);
       ctx.moveTo(CX + Math.cos(ang) * r0, 300 + Math.sin(ang) * r0); ctx.lineTo(CX + Math.cos(ang) * r1, 300 + Math.sin(ang) * r1);
     }
-    ctx.stroke(); ctx.globalAlpha = 1;
+    ctx.strokeStyle = boosting && Math.random() < 0.5 ? col : C.text; ctx.globalAlpha = boosting ? 0.45 : 0.18;
+    ctx.stroke();
+    if (boosting) { // glowing screen edges
+      ctx.strokeStyle = col;
+      for (const [x, a] of [[3, 0.8], [10, 0.35], [18, 0.15]]) {
+        ctx.globalAlpha = a * (0.7 + 0.3 * Math.sin(S.ui * 20)); ctx.lineWidth = 6;
+        line(x, 60, x, H - 60); line(W - x, 60, W - x, H - 60);
+      }
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  // Expanding shockwave rings around the car (boost, power-ups, perfect combos).
+  function drawRings() {
+    const cx = X(S.px, 0.2), cy = Y(0.2, S.y + 0.3);
+    for (const r of S.rings) {
+      const k = r.t / 0.6, e = easeOut(k);
+      ctx.globalAlpha = (1 - k) * 0.9; ctx.strokeStyle = r.color; ctx.lineWidth = 8 * (1 - k) + 2;
+      ctx.beginPath(); ctx.ellipse(cx, cy, 40 + e * 320, 20 + e * 160, 0, 0, Math.PI * 2); ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
   }
 
   // ---------- HUD ----------
@@ -1264,37 +1349,70 @@
     ctx.font = FONT(weight, size, it); ctx.fillStyle = color; ctx.textAlign = align; ctx.textBaseline = 'middle';
     ctx.fillText(txt, x, y);
   }
-  function chroma(txt, y, size) { // vaporwave RGB-split title
-    text(txt, CX - 3, y, size, C.pink, 900, 'center', 'italic ');
-    text(txt, CX + 3, y + 1, size, C.cyan, 900, 'center', 'italic ');
-    text(txt, CX, y, size, C.text, 900, 'center', 'italic ');
+  // Vaporwave RGB-split text; `off` animates the split.
+  function chroma(txt, y, size, x = CX, off = 3, color = C.text) {
+    const ga = ctx.globalAlpha;
+    ctx.globalAlpha = ga * 0.85;
+    text(txt, x - off, y, size, C.pink, 900, 'center', 'italic ');
+    text(txt, x + off, y + 1, size, C.cyan, 900, 'center', 'italic ');
+    ctx.globalAlpha = ga;
+    text(txt, x, y, size, color, 900, 'center', 'italic ');
   }
-  function panel(y, h) {
-    ctx.globalAlpha = 0.92; ctx.fillStyle = C.panel; rrect(CX - 250, y, 500, h, 22); ctx.fill();
-    ctx.globalAlpha = 0.8; ctx.strokeStyle = C.pink; ctx.lineWidth = 2; ctx.stroke(); ctx.globalAlpha = 1;
+  // Text drawn scaled about its anchor, for pops and bounces.
+  function scaledText(txt, x, y, size, color, sc, align = 'center', it = 'italic ', weight = 900) {
+    ctx.save(); ctx.translate(x, y); ctx.scale(sc, sc); text(txt, 0, 0, size, color, weight, align, it); ctx.restore();
+  }
+  // The HUD's building block: a dark rounded chip with a neon outline and a top sheen.
+  function chip(x, y, w, h, accent, r = 12) {
+    const ga = ctx.globalAlpha;
+    ctx.globalAlpha = ga * 0.85; ctx.fillStyle = C.panel; rrect(x, y, w, h, r); ctx.fill();
+    ctx.globalAlpha = ga * 0.95; ctx.strokeStyle = accent; ctx.lineWidth = 2; ctx.stroke();
+    ctx.globalAlpha = ga * 0.3; ctx.strokeStyle = C.text; ctx.lineWidth = 1.5; line(x + r, y + 4, x + w - r, y + 4);
+    ctx.globalAlpha = ga;
+  }
+  function label(txt, x, y, color = C.dim, align = 'left') { text(txt, x, y, 11, color, 800, align); }
+  function panel(y, h, accent = C.pink, sc = 1) {
+    ctx.save(); ctx.translate(CX, y + h / 2); ctx.scale(sc, sc); ctx.translate(-CX, -(y + h / 2));
+    chip(CX - 250, y, 500, h, accent, 24);
   }
 
-  function drawSpeedo() {
-    const cx = 528, cy = 540, r = 50, a0 = Math.PI * 0.8, a1 = Math.PI * 2.2;
-    const kmh = Math.round(S.speed * KMH), frac = clamp(kmh / 450, 0, 1);
+  function drawSpeedo(slide) {
+    const cx = 528, cy = 538 + slide, r = 48, a0 = Math.PI * 0.8, a1 = Math.PI * 2.2;
+    const kmh = Math.round(S.speed * KMH), frac = clamp(kmh / 450, 0, 1), boosting = S.boostT > 0 || S.pw.nitro > 0;
+    const col = boosting ? (S.pw.nitro > 0 ? C.orange : C.cyan) : kmh < 180 ? C.mint : kmh < 280 ? C.yellow : C.pink;
+    ctx.globalAlpha = 0.85; ctx.fillStyle = C.panel; ctx.beginPath(); ctx.arc(cx, cy, r + 12, 0, Math.PI * 2); ctx.fill(); ctx.globalAlpha = 1;
     ctx.lineWidth = 8; ctx.strokeStyle = '#2a1640';
     ctx.beginPath(); ctx.arc(cx, cy, r, a0, a1); ctx.stroke();
-    ctx.strokeStyle = kmh < 180 ? C.cyan : kmh < 280 ? C.yellow : C.pink;
+    if (boosting) { ctx.globalAlpha = 0.35; ctx.lineWidth = 16; ctx.strokeStyle = col; ctx.beginPath(); ctx.arc(cx, cy, r, a0, a0 + (a1 - a0) * frac); ctx.stroke(); ctx.globalAlpha = 1; }
+    ctx.lineWidth = 8; ctx.strokeStyle = col;
     ctx.beginPath(); ctx.arc(cx, cy, r, a0, a0 + (a1 - a0) * frac); ctx.stroke();
-    text(String(kmh), cx, cy - 4, 28, C.text, 900, 'center', 'italic ');
-    text('KM/H', cx, cy + 20, 12, C.dim, 800);
+    const tip = a0 + (a1 - a0) * frac;
+    ctx.fillStyle = C.text; ctx.beginPath(); ctx.arc(cx + Math.cos(tip) * r, cy + Math.sin(tip) * r, 5, 0, Math.PI * 2); ctx.fill();
+    scaledText(String(kmh), cx, cy - 4, 28, C.text, 1 + S.hud.kick * 0.3);
+    label('KM/H', cx, cy + 20, col, 'center');
   }
 
-  function drawBoostBar() {
-    const x0 = CX - 78, y = H - 26;
-    text('BOOST', x0 - 10, y + 1, 13, S.boostT > 0 ? C.cyan : C.dim, 800, 'right', 'italic ');
+  function drawBoostBar(slide) {
+    const w = 236, x0 = CX - w / 2, y = H - 44 + slide, boosting = S.boostT > 0;
+    chip(x0, y, w, 34, boosting ? C.text : C.cyan);
+    label('BOOST', x0 + 12, y + 17, boosting ? C.cyan : C.dim);
     for (let i = 0; i < 3; i++) {
-      const x = x0 + i * 54, fill = clamp(S.boost - i, 0, 1);
-      ctx.fillStyle = '#10223a'; rrect(x, y - 7, 48, 14, 5); ctx.fill();
-      if (fill > 0) { ctx.fillStyle = fill >= 1 ? C.cyan : '#1e7f93'; rrect(x, y - 7, 48 * fill, 14, 5); ctx.fill(); }
-      ctx.strokeStyle = C.cyan; ctx.lineWidth = 1.5; rrect(x, y - 7, 48, 14, 5); ctx.stroke();
+      const x = x0 + 62 + i * 52, fill = clamp(S.boost - i, 0, 1), full = fill >= 1;
+      ctx.fillStyle = '#10223a'; rrect(x, y + 10, 46, 14, 5); ctx.fill();
+      if (fill > 0) {
+        if (full) { ctx.globalAlpha = 0.3 + 0.15 * Math.sin(S.ui * 6 + i); ctx.fillStyle = C.cyan; rrect(x - 3, y + 7, 52, 20, 7); ctx.fill(); ctx.globalAlpha = 1; }
+        ctx.fillStyle = full ? C.cyan : '#1e7f93'; rrect(x, y + 10, Math.max(6, 46 * fill), 14, 5); ctx.fill();
+      }
+      if (full && i === Math.floor(S.boost) - 1 && S.hud.ready > 0) { ctx.globalAlpha = S.hud.ready; ctx.fillStyle = C.text; rrect(x, y + 10, 46, 14, 5); ctx.fill(); ctx.globalAlpha = 1; }
     }
-    if (S.boost >= 1 && S.boostT <= 0 && Math.sin(S.anim * 5) > 0) text('swipe ↑', x0 + 170, y + 1, 13, C.cyan, 700, 'left');
+    if (boosting) { // time left, draining across the whole meter
+      ctx.fillStyle = C.text; ctx.fillRect(x0 + 62, y + 28, 150 * (S.boostT / BOOST_T), 3);
+    } else if (S.boost >= 1) {
+      const bob = Math.sin(S.ui * 6) * 3;
+      ctx.globalAlpha = 0.6 + 0.4 * Math.sin(S.ui * 6);
+      drawArrow('up', x0 + w + 16, y + 17 + bob, 9, C.cyan);
+      ctx.globalAlpha = 1;
+    }
   }
 
   function drawArrow(dir, cx, cy, r, color) {
@@ -1305,25 +1423,33 @@
     ctx.restore();
   }
 
-  // The combo: one icon per swipe, lit as you land each trick, plus the air time you have left.
+  // The combo: one icon per swipe, lit (with a bounce) as you land each trick, plus the air time you have left.
   function drawTrickHud() {
     const T = S.trick;
     if (!T) return;
     const n = T.seq.length, bs = 52, gap = 12, w = n * bs + (n - 1) * gap, x0 = CX - w / 2, y0 = 84;
-    ctx.globalAlpha = T.landed ? clamp(T.hide / 0.4, 0, 1) : 1;
+    const age = S.ui - (T.born || (T.born = S.ui));
+    ctx.globalAlpha = (T.landed ? clamp(T.hide / 0.4, 0, 1) : 1) * clamp(age / 0.15, 0, 1);
     const ga = ctx.globalAlpha;
     const [head, hc] = T.state === 'done' ? ['PERFECT COMBO!', C.mint] : T.state === 'fail' ? ['COMBO BROKEN', C.red] : T.landed ? ['TOO SLOW', C.orange] : ['TRICK TIME', C.pink];
-    text(head, CX, y0 - 22, 22, hc, 900, 'center', 'italic ');
+    const shakeX = T.state === 'fail' ? Math.sin(S.ui * 60) * 6 * clamp(1 - (S.ui - T.failAt) / 0.4, 0, 1) : 0;
+    if (T.state === 'done') chroma(head, y0 - 24, 24, CX, 2 + Math.sin(S.ui * 20) * 2, C.mint);
+    else scaledText(head, CX + shakeX, y0 - 24, 22, hc, 0.9 + 0.1 * easeBack(age / 0.3));
     text(`${T.i}/${n}`, x0 + w + 14, y0 + bs / 2, 18, C.dim, 800, 'left');
     for (let i = 0; i < n; i++) {
       const x = x0 + i * (bs + gap), hit = i < T.i, miss = T.state === 'fail' && i === T.i;
       const next = T.state === 'active' && !T.landed && i === T.i;
-      const pulse = next ? 1 + 0.08 * Math.sin(S.ui * 12) : 1, sz = bs * pulse, bx = x + (bs - sz) / 2, by = y0 + (bs - sz) / 2;
+      const enter = easeBack((age - i * 0.06) / 0.25);                    // icons drop in one by one
+      const bounce = hit && T.hitAt && T.hitAt[i] !== undefined ? 1 + 0.35 * (1 - easeOut((S.ui - T.hitAt[i]) / 0.3)) : 1;
+      const pulse = next ? 1 + 0.08 * Math.sin(S.ui * 12) : 1, sz = bs * pulse * bounce * enter;
+      if (sz <= 1) continue;
+      const cx = x + bs / 2, cy = y0 + bs / 2 + (1 - enter) * -20;
       ctx.globalAlpha = ga * (hit || miss || next ? 1 : 0.55);
+      if (hit || next) { ctx.globalAlpha *= 0.35; ctx.fillStyle = hit ? C.mint : C.pink; rrect(cx - sz / 2 - 5, cy - sz / 2 - 5, sz + 10, sz + 10, 15); ctx.fill(); ctx.globalAlpha = ga; }
       ctx.fillStyle = hit ? C.mint : miss ? C.red : next ? '#3a1a5a' : C.panel;
-      rrect(bx, by, sz, sz, 12); ctx.fill();
+      rrect(cx - sz / 2, cy - sz / 2, sz, sz, 12); ctx.fill();
       if (next) { ctx.strokeStyle = C.text; ctx.lineWidth = 3; ctx.stroke(); }
-      drawArrow(T.seq[i], x + bs / 2, y0 + bs / 2, sz * 0.28, hit || miss ? C.body : next ? C.text : C.dim);
+      drawArrow(T.seq[i], cx, cy, sz * 0.28, hit || miss ? C.body : next ? C.text : C.dim);
     }
     ctx.globalAlpha = ga;
     const frac = T.state === 'done' ? 1 : T.landed ? 0 : clamp(airLeft() / T.total, 0, 1);
@@ -1332,121 +1458,204 @@
     ctx.globalAlpha = 1;
   }
 
-  function drawHud() {
-    ctx.globalAlpha = 1;
-    const blink = 0.55 + 0.45 * Math.sin(S.anim * 5);
-    if (S.mode !== 'title') {
-      text(String(Math.floor(S.score)), 22, 30, 26, C.text, 800, 'left');
-      if (mult() > 1) text(`x${mult()}`, 22, 60, 20, C.yellow, 800, 'left', 'italic ');
-      if (S.t - S.lastHitT < HIT_WINDOW && S.mode === 'play') {
-        const left = HIT_WINDOW - (S.t - S.lastHitT), on = left > 5 || Math.sin(S.ui * 12) > 0;
-        ctx.globalAlpha = 0.9; ctx.fillStyle = '#2a0808'; rrect(18, 88, 150, 30, 10); ctx.fill();
-        ctx.strokeStyle = C.red; ctx.lineWidth = 2; ctx.stroke(); ctx.globalAlpha = 1;
-        text('DAMAGED', 28, 101, 15, on ? C.red : C.orange, 900, 'left', 'italic ');
-        text(String(Math.ceil(left)), 158, 101, 15, C.text, 800, 'right');
-        ctx.fillStyle = C.red; ctx.fillRect(26, 112, 134 * clamp(left / HIT_WINDOW, 0, 1), 3);
-      }
-      if (S.chain) {
-        text('STYLE', 62, 60, 13, C.mint, 800, 'left', 'italic ');
-        ctx.fillStyle = '#123'; ctx.fillRect(22, 74, 90, 5);
-        ctx.fillStyle = C.mint; ctx.fillRect(22, 74, 90 * clamp(S.chainT / CHAIN_T, 0, 1), 5);
-      }
-      text(String(S.coins), 578, 30, 26, C.yellow, 800, 'right');
-      ctx.font = FONT(800, 26);
-      const cw = ctx.measureText(String(S.coins)).width;
-      ctx.strokeStyle = C.yellow; ctx.lineWidth = 4;
-      ctx.beginPath(); ctx.ellipse(578 - cw - 18, 30, 7, 10, 0, 0, Math.PI * 2); ctx.stroke();
+  function drawPlayHud() {
+    const Hh = S.hud, slideT = (1 - easeOut(Hh.in)) * -90, slideB = (1 - easeOut(Hh.in)) * 90;
 
-      // Lane map for where you are right now.
-      const L = laneAt('L', S.dist), R = laneAt('R', S.dist), n = R - L + 1, bw = 16, gap = 5, x0 = CX - (n * bw + (n - 1) * gap) / 2;
-      for (let i = 0; i < n; i++) {
-        ctx.strokeStyle = C.cyan; ctx.fillStyle = C.pink; ctx.lineWidth = 2;
-        rrect(x0 + i * (bw + gap), 18, bw, 26, 4);
-        if (L + i === S.lane) ctx.fill();
-        ctx.stroke();
-      }
+    // Score (rolls up, pops on big gains) and the multiplier badge.
+    chip(14, 12 + slideT, 168, 54, C.pink);
+    label('SCORE', 28, 27 + slideT);
+    scaledText(String(Math.floor(Hh.score)), 28, 48 + slideT, 26, C.text, 1 + Hh.scorePop * 0.25, 'left', '', 900);
+    if (mult() > 1) {
+      const bc = S.chain ? C.mint : C.yellow, pop = 1 + 0.08 * Math.sin(S.ui * 8);
+      ctx.save(); ctx.translate(214, 39 + slideT); ctx.scale(pop, pop);
+      ctx.fillStyle = bc; rrect(-26, -15, 52, 30, 15); ctx.fill();
+      text(`x${mult()}`, 0, 1, 18, C.body, 900, 'center', 'italic ');
+      ctx.restore();
+    }
+    let y2 = 74 + slideT;
+    if (S.chain) {
+      label('STYLE', 16, y2 + 4, C.mint);
+      ctx.fillStyle = '#123'; rrect(58, y2, 124, 7, 3); ctx.fill();
+      ctx.fillStyle = C.mint; rrect(58, y2, Math.max(6, 124 * clamp(S.chainT / CHAIN_T, 0, 1)), 7, 3); ctx.fill();
+      y2 += 16;
+    }
+    if (S.t - S.lastHitT < HIT_WINDOW && S.mode === 'play') {
+      const left = HIT_WINDOW - (S.t - S.lastHitT), on = left > 5 || Math.sin(S.ui * 12) > 0;
+      const sh = Math.sin(S.ui * 50) * 8 * Hh.dmgPop;
+      ctx.save(); ctx.translate(sh, 0);
+      chip(14, y2, 168, 32, C.red, 10);
+      text('DAMAGED', 26, y2 + 14, 15, on ? C.red : C.orange, 900, 'left', 'italic ');
+      text(String(Math.ceil(left)), 170, y2 + 14, 15, C.text, 800, 'right');
+      ctx.fillStyle = C.red; ctx.fillRect(24, y2 + 25, 148 * clamp(left / HIT_WINDOW, 0, 1), 3);
+      ctx.restore();
+    }
 
-      let py = H - 70;
-      for (const k of Object.keys(POWERS)) {
-        const left = S.pw[k] || 0;
-        if (left <= 0) continue;
-        drawPowerIcon(k, 34, py, 18, POWERS[k].color);
-        ctx.fillStyle = POWERS[k].color; ctx.globalAlpha = 0.8;
-        ctx.fillRect(56, py - 3, 70 * Math.min(1, left / POWERS[k].dur), 6); ctx.globalAlpha = 1;
-        py -= 40;
-      }
-      drawSpeedo();
-      drawBoostBar();
-      if (S.mode === 'play') drawTrickHud();
+    // Coins, with the flying coins landing in the counter.
+    chip(418, 12 + slideT, 168, 54, C.yellow);
+    label('COINS', 432, 27 + slideT);
+    const cs = 1 + Hh.coinPop * 0.35;
+    ctx.fillStyle = C.yellow; ctx.beginPath();
+    ctx.ellipse(446, 48 + slideT, Math.max(2, 9 * Math.abs(Math.cos(S.ui * 3))) * cs, 10 * cs, 0, 0, Math.PI * 2); ctx.fill();
+    scaledText(String(S.coins), 572, 48 + slideT, 26, C.yellow, cs, 'right', '', 900);
+    for (const f of S.flyers) {
+      const e = easeOut(f.t / 0.45), fxp = f.x + (446 - f.x) * e, fyp = f.y + (48 - f.y) * e - Math.sin(e * Math.PI) * 60;
+      ctx.fillStyle = C.yellow; ctx.beginPath(); ctx.arc(fxp, fyp, 7 - e * 2, 0, Math.PI * 2); ctx.fill();
+    }
 
-      if (S.event && S.mode === 'play' && !S.trick) {
-        const E = EVENTS[S.event.kind];
-        ctx.globalAlpha = 0.9; ctx.fillStyle = C.panel; rrect(CX - 90, 118, 180, 30, 15); ctx.fill();
-        ctx.strokeStyle = E.col; ctx.lineWidth = 2; ctx.stroke(); ctx.globalAlpha = 1;
-        text(E.name, CX, 131, 16, E.col, 900, 'center', 'italic ');
-        ctx.fillStyle = E.col; ctx.fillRect(CX - 70, 143, 140 * clamp(S.event.t / E.dur, 0, 1), 3);
-      }
-      if (S.zoneBanner && S.mode === 'play') {
-        ctx.globalAlpha = clamp(S.zoneBanner.t / 0.5, 0, 1) * clamp((2.4 - S.zoneBanner.t) / 0.3, 0, 1);
-        text('ENTERING', CX, 196, 15, C.dim, 800);
-        chroma(S.zoneBanner.name, 226, 34);
-        ctx.globalAlpha = 1;
-      }
+    // Lane map: slots for the lanes here, a sliding dot for you, and a blink on a lane that's about to end.
+    const L = laneAt('L', S.dist), R = laneAt('R', S.dist), n = R - L + 1, bw = 18, gap = 6, mw = n * bw + (n - 1) * gap, x0 = CX - mw / 2;
+    chip(x0 - 10, 12 + slideT, mw + 20, 40, C.cyan);
+    for (let i = 0; i < n; i++) {
+      let ending = false;
+      for (const side of ['L', 'R']) for (const c of S.road[side].ch) if (!isOpening(side, c) && c.from === L + i && c.w - S.dist > 0 && c.w - S.dist < 80) ending = true;
+      ctx.fillStyle = ending && Math.sin(S.ui * 10) > 0 ? '#5a3a08' : '#2e1d4d';
+      rrect(x0 + i * (bw + gap), 20 + slideT, bw, 24, 5); ctx.fill();
+      ctx.strokeStyle = ending ? C.yellow : '#4f7fa0'; ctx.lineWidth = 1.5; ctx.stroke();
+    }
+    const dx = x0 + (Hh.dot - L) * (bw + gap) + bw / 2;
+    ctx.globalAlpha = 0.35; ctx.fillStyle = C.pink; ctx.beginPath(); ctx.arc(dx, 32 + slideT, 11, 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = 1; ctx.beginPath(); ctx.arc(dx, 32 + slideT, 6, 0, Math.PI * 2); ctx.fill();
 
-      // Your lane is about to end: say which way to merge.
-      if (S.mode === 'play' && !S.trick) {
-        for (const side of ['L', 'R']) {
-          for (const c of S.road[side].ch) {
-            const ahead = c.w - S.dist;
-            if (isOpening(side, c) || c.from !== S.lane || ahead < 0 || ahead > 55 || Math.sin(S.anim * 9) < -0.3) continue;
-            ctx.globalAlpha = 0.9; ctx.fillStyle = '#2a1a02'; rrect(CX - 170, 62, 340, 48, 14); ctx.fill();
-            ctx.strokeStyle = C.yellow; ctx.lineWidth = 2; ctx.stroke(); ctx.globalAlpha = 1;
-            text('LANE ENDS · MERGE', CX, 86, 21, C.yellow, 900);
-            ctx.strokeStyle = C.yellow; ctx.lineWidth = 4;
-            chevronRow(CX + dirOf(side) * -140, 86, -dirOf(side), 2, 9, 12);
-          }
+    // Active power-ups, bottom left.
+    let py = H - 64 + slideB;
+    for (const k of Object.keys(POWERS)) {
+      const left = S.pw[k] || 0;
+      if (left <= 0) continue;
+      chip(14, py - 18, 128, 36, POWERS[k].color, 10);
+      drawPowerIcon(k, 34, py, 14, POWERS[k].color);
+      ctx.fillStyle = POWERS[k].color; rrect(54, py - 3, 76 * Math.min(1, left / POWERS[k].dur), 6, 3); ctx.fill();
+      py -= 44;
+    }
+    drawSpeedo(slideB);
+    drawBoostBar(slideB);
+    if (S.mode !== 'play') return;
+    drawTrickHud();
+
+    if (S.event && !S.trick) {
+      const E = EVENTS[S.event.kind], age = E.dur - S.event.t, sc = easeBack(age / 0.35);
+      ctx.save(); ctx.translate(CX, 133); ctx.scale(sc, sc);
+      chip(-96, -16, 192, 32, E.col, 16);
+      text(E.name, 0, -2, 16, E.col, 900, 'center', 'italic ');
+      ctx.fillStyle = E.col; ctx.fillRect(-76, 10, 152 * clamp(S.event.t / E.dur, 0, 1), 3);
+      ctx.restore();
+    }
+    if (S.zoneBanner) {
+      const t = 2.4 - S.zoneBanner.t, inX = (1 - easeOut(t / 0.45)) * -420, outX = S.zoneBanner.t < 0.4 ? (1 - S.zoneBanner.t / 0.4) * 420 : 0;
+      ctx.save(); ctx.translate(inX + outX, 0);
+      text('ENTERING', CX, 200, 14, C.dim, 800);
+      chroma(S.zoneBanner.name, 230, 36, CX, 3 + Math.sin(S.ui * 9) * 1.5, C.text);
+      ctx.restore();
+    }
+
+    // Your lane is about to end: say which way to merge.
+    if (!S.trick) {
+      for (const side of ['L', 'R']) {
+        for (const c of S.road[side].ch) {
+          const ahead = c.w - S.dist;
+          if (isOpening(side, c) || c.from !== S.lane || ahead < 0 || ahead > 55) continue;
+          const sc = 1 + 0.04 * Math.sin(S.ui * 10);
+          ctx.save(); ctx.translate(CX, 86); ctx.scale(sc, sc);
+          ctx.fillStyle = '#2a1a02'; ctx.globalAlpha = 0.9; rrect(-170, -24, 340, 48, 14); ctx.fill();
+          ctx.globalAlpha = 1; ctx.strokeStyle = C.yellow; ctx.lineWidth = 2; ctx.stroke();
+          text('LANE ENDS · MERGE', -8 * dirOf(side), 0, 21, C.yellow, 900, 'center', 'italic ');
+          ctx.strokeStyle = C.yellow; ctx.lineWidth = 4;
+          chevronRow(dirOf(side) * -140 + Math.sin(S.ui * 8) * 4 * -dirOf(side), 0, -dirOf(side), 2, 9, 12);
+          ctx.restore();
         }
       }
-      if (S.toast && S.mode === 'play') {
-        ctx.globalAlpha = clamp(S.toast.t / 0.4, 0, 1);
-        text(S.toast.text, CX, (S.trick ? 196 : 170) - (1.4 - S.toast.t) * 20, 28, S.toast.color, 900, 'center', 'italic ');
-        ctx.globalAlpha = 1;
-      }
     }
 
-    if (S.mode === 'title') {
-      panel(110, 420);
-      chroma('LANE RUNNER', 156, 50);
-      text('V A P O R   F R E E W A Y', CX, 198, 18, C.pink, 700);
-      const rows = [
-        ['← →', 'change lanes'],
-        ['swipe ↑', 'boost · smashes cones & boards'],
-        ['swipe ↓', 'brake'],
-        ['pinch', 'horn: traffic moves over'],
-      ];
-      rows.forEach(([k, v], i) => {
-        text(k, CX - 70, 242 + i * 32, 18, C.cyan, 800, 'right');
-        text(v, CX - 54, 242 + i * 32, 17, C.dim, 500, 'left');
-      });
-      text('Hit pink TRICK ramps, then swipe the combo!', CX, 380, 16, C.pink, 800);
-      text('One hit slows you. Two hits in a minute: wrecked.', CX, 404, 16, C.yellow, 700);
-      ctx.globalAlpha = blink; text('Pinch to start', CX, 452, 28, C.text, 800); ctx.globalAlpha = 1;
-      if (S.best) text(`Best ${S.best}`, CX, 494, 18, C.yellow, 600);
-      text(BUILD, CX + 232, 514, 12, C.dim, 600, 'right');
-    } else if (S.mode === 'paused') {
-      panel(230, 130);
-      text('Paused', CX, 272, 34, C.text, 800);
-      ctx.globalAlpha = blink; text('Pinch to resume', CX, 322, 22, C.dim, 600); ctx.globalAlpha = 1;
-    } else if (S.mode === 'over') {
-      panel(150, 290);
-      chroma('WRECKED', 196, 46);
-      text(`Score ${Math.floor(S.score)}`, CX, 252, 30, C.text, 800);
-      text(`${Math.round(S.dist / 100) / 10} km  ·  top ${Math.round(S.base * KMH)} km/h`, CX, 290, 19, C.dim, 500);
-      text(`${S.coins} coins  ·  best ${S.best}`, CX, 318, 19, C.dim, 500);
-      if (S.newBest) text('New best!', CX, 350, 22, C.yellow, 800);
-      const ready = performance.now() - S.overAt > RESTART_LOCK_MS;
-      ctx.globalAlpha = ready ? blink : 0.25; text('Pinch to drive again', CX, 398, 24, C.text, 800); ctx.globalAlpha = 1;
+    // Toasts pop in with a little overshoot, then drift up and fade.
+    if (S.toast) {
+      const age = 1.4 - S.toast.t, sc = easeBack(age / 0.22), y = (S.trick ? 200 : 176) - age * 14;
+      ctx.globalAlpha = clamp(S.toast.t / 0.4, 0, 1);
+      ctx.save(); ctx.translate(CX, y); ctx.scale(sc, sc);
+      chroma(S.toast.text, 0, 30, 0, 2.5, S.toast.color);
+      ctx.restore();
+      ctx.globalAlpha = 1;
     }
+  }
+
+  function keyChip(k, x, y) {
+    ctx.font = FONT(800, 16); const w = ctx.measureText(k).width + 20;
+    chip(x - w, y - 14, w, 28, C.cyan, 8);
+    text(k, x - w / 2, y + 1, 16, C.cyan, 800);
+  }
+
+  function drawTitle() {
+    const t = S.ui, inS = easeBack(t / 0.5);
+    panel(104, 432, C.pink, inS);
+    const bob = Math.sin(t * 2) * 3;
+    chroma('LANE RUNNER', 152 + bob, 52, CX, 3 + Math.sin(t * 3) * 2);
+    text('V A P O R   F R E E W A Y', CX, 196, 17, C.pink, 700);
+    const rows = [['← →', 'change lanes'], ['↑', 'boost · smashes cones & boards'], ['↓', 'brake'], ['pinch', 'horn: traffic moves over']];
+    rows.forEach(([k, v], i) => {
+      const a = clamp((t - 0.25 - i * 0.08) / 0.3, 0, 1);
+      ctx.globalAlpha = a;
+      keyChip(k, CX - 58 + (1 - a) * -20, 238 + i * 36);
+      text(v, CX - 44, 239 + i * 36, 16, C.dim, 600, 'left');
+    });
+    ctx.globalAlpha = clamp((t - 0.6) / 0.3, 0, 1);
+    text('Hit pink TRICK ramps, then swipe the combo!', CX, 392, 15, C.pink, 800);
+    text('One hit slows you. Two in a minute: wrecked.', CX, 414, 15, C.yellow, 700);
+    const pulse = 1 + 0.05 * Math.sin(t * 5);
+    ctx.save(); ctx.translate(CX, 462); ctx.scale(pulse, pulse);
+    ctx.globalAlpha *= 0.3; ctx.fillStyle = C.pink; rrect(-128, -26, 256, 52, 26); ctx.fill();
+    ctx.globalAlpha = clamp((t - 0.6) / 0.3, 0, 1); ctx.fillStyle = C.pink; rrect(-118, -21, 236, 42, 21); ctx.fill();
+    text('PINCH TO START', 0, 1, 20, C.body, 900, 'center', 'italic ');
+    ctx.restore();
+    if (S.best) text(`BEST ${S.best}`, CX, 506, 15, C.yellow, 800);
+    text(BUILD, CX + 236, 524, 11, C.dim, 600, 'right');
+    ctx.restore(); ctx.globalAlpha = 1;
+  }
+
+  function statChip(x, y, big, small, color, a) {
+    ctx.globalAlpha = a;
+    chip(x, y, 200, 50, color, 12);
+    text(big, x + 14, y + 22, 20, C.text, 900, 'left', 'italic ');
+    label(small, x + 14, y + 40, color);
+  }
+
+  function drawOver() {
+    const t = S.hud.overT, sc = easeBack(t / 0.45);
+    panel(112, 376, C.red, sc);
+    const jolt = t < 0.4 ? Math.sin(t * 80) * 6 * (1 - t / 0.4) : 0;
+    chroma('WRECKED', 158, 48, CX + jolt, 3 + Math.sin(S.ui * 7) * 2);
+    const shown = Math.floor(S.score * easeOut((t - 0.3) / 1.0));
+    label('SCORE', CX, 196, C.dim, 'center');
+    scaledText(String(shown), CX, 226, 40, C.text, 1, 'center', 'italic ');
+    if (S.newBest && t > 1.3) {
+      const p = 1 + 0.08 * Math.sin(S.ui * 8);
+      ctx.save(); ctx.translate(CX, 262); ctx.scale(p, p);
+      ctx.fillStyle = C.yellow; rrect(-62, -13, 124, 26, 13); ctx.fill();
+      text('NEW BEST!', 0, 1, 15, C.body, 900, 'center', 'italic ');
+      ctx.restore();
+    } else text(`BEST ${S.best}`, CX, 262, 15, C.yellow, 800);
+    const stats = [
+      [`${(S.dist / 1000).toFixed(1)} km`, 'DISTANCE', C.cyan], [`${Math.round(S.base * KMH)} km/h`, 'TOP SPEED', C.pink],
+      [`${S.coins}`, 'COINS', C.yellow], [`${S.perfects}`, 'PERFECT COMBOS', C.mint],
+    ];
+    stats.forEach(([big, small, col], i) => statChip(CX - 206 + (i % 2) * 212, 284 + Math.floor(i / 2) * 58, big, small, col, clamp((t - 0.5 - i * 0.1) / 0.3, 0, 1)));
+    ctx.globalAlpha = 1;
+    const ready = performance.now() - S.overAt > RESTART_LOCK_MS;
+    const pulse = ready ? 1 + 0.05 * Math.sin(S.ui * 5) : 1;
+    ctx.save(); ctx.translate(CX, 452); ctx.scale(pulse, pulse);
+    ctx.globalAlpha = ready ? 1 : 0.3; ctx.fillStyle = C.pink; rrect(-128, -21, 256, 42, 21); ctx.fill();
+    text('PINCH TO DRIVE AGAIN', 0, 1, 18, C.body, 900, 'center', 'italic ');
+    ctx.restore(); ctx.restore(); ctx.globalAlpha = 1;
+  }
+
+  function drawHud() {
+    ctx.globalAlpha = 1;
+    if (S.hud.flash > 0) { ctx.globalAlpha = S.hud.flash * 0.3; ctx.fillStyle = C.cyan; ctx.fillRect(0, 0, W, H); ctx.globalAlpha = 1; }
+    if (S.mode !== 'title') drawPlayHud();
+    if (S.mode === 'title') drawTitle();
+    else if (S.mode === 'paused') {
+      panel(230, 130, C.cyan);
+      chroma('PAUSED', 272, 34);
+      ctx.globalAlpha = 0.55 + 0.45 * Math.sin(S.ui * 5); text('Pinch to resume', CX, 322, 20, C.dim, 700);
+      ctx.restore(); ctx.globalAlpha = 1;
+    } else if (S.mode === 'over') drawOver();
   }
 
   function render() {
@@ -1466,6 +1675,7 @@
     if (S.mode !== 'title') drawPlayer();
     for (const o of live) if (!under(o)) drawObj(o);
     drawParts();
+    drawRings();
     drawSpeedLines();
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     if (S.flash > 0) { ctx.globalAlpha = S.flash * 0.8; ctx.fillStyle = '#ff2840'; ctx.fillRect(0, 0, W, H); ctx.globalAlpha = 1; }
