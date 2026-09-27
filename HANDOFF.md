@@ -138,41 +138,58 @@ It also runs a random-input soak and a render benchmark, and saves screenshots: 
 
 # Handoff: Ramp Rivals
 
-`ramp-rivals/index.html` is a second game in the same style and under the same glasses constraints as Lane Runner (see "Hard constraints for the glasses" above: pure `#000` background, fixed 600×600 stage, `mrbd-web-app-capable`, no-cache tags, ~30 fps loop, nothing running while hidden, one self-contained file). It's about 1,700 lines of vanilla JS drawing to a 600×600 canvas. `BUILD` is shown on the title screen (currently `v1`).
+`ramp-rivals/index.html` is a second game in the same style and under the same glasses constraints as Lane Runner (see "Hard constraints for the glasses" above: pure `#000` background, fixed 600×600 stage, `mrbd-web-app-capable`, no-cache tags, ~30 fps loop, nothing running while hidden, one self-contained file). It's about 2,200 lines of vanilla JS drawing to a 600×600 canvas. `BUILD` is shown on the title screen (currently `v2`).
 
 Live URL: https://dinco-mrt.github.io/ramp-rivals/
 
+**v2** came from the owner's first play of v1: "too much going on, players should be 3D low-poly, the UI is far too much detail, and the rivals aren't a challenge." So in v2:
+- the racers are flat-shaded low-poly 3D models instead of flat drawings;
+- the HUD is down to five things, and most toasts, rings and particle effects are gone;
+- the rivals are properly quick (tuned with `tests/ramp-rivals.sim.js`), chase you down when they fall behind, block you, and save their boosts for you;
+- pick-ups are personal, so rivals can't take yours.
+
 ## The game
 
-A TRON-style, cartoony lane racer. You're a round little hero bot on a hoverboard, racing seven rival bots to the finish of one linear track.
+A TRON-style, cartoony lane racer. You're a white low-poly robot on a hex hoverboard, racing seven rival bots to the finish of one linear track.
 
 - **8 lanes, 8 racers.** There's always one lane per racer, and everyone starts side by side. You get a 3-2-1 countdown: swipe up right on GO for a rocket start, or you stall if you swipe too early.
-- **The rivals** are round, one-wheeled beetle bots with two little claws and eyes on stalks: ZAPP, NIBBS, KRUNCH, PIXIE, VOLTA, GLITCH and BOLTZ. Their eyes look back at you when you're close.
+- **The rivals** are round, one-wheeled low-poly beetle bots with two little claws and eyes on stalks: ZAPP, NIBBS, KRUNCH, PIXIE, VOLTA, GLITCH and BOLTZ. Their eyes and claws glow red while they wind up an attack.
 - **Tracks** are built from straights and very wide freeway turns: 170–300 unit radius, with 180° "turn around" arcs. Every turn eases in and out, there are no hills, and you can always see far ahead. The chase camera yaws with the road and leans a little into turns. The floor is a world-fixed TRON grid, so it streams past and swings round as you turn.
-- **3 maps × 3 tracks**, each map a step up in rival skill, aggression and firewalls:
+- **3 maps × 3 tracks**, each map a step up in rival speed, aggression and firewalls:
   - GRID CITY (rookie, cyan)
   - SOLAR CANYON (pro, orange)
   - VOID RINGS (elite, pink/purple)
 
   Layouts are seeded, so a track is the same every time.
-- **Bumping.** Swiping into a lane where someone is alongside doesn't move you: you bump them. They're slowed (×0.86) and knocked only if you're faster than them. If you're boosting, they spin out instead. Running into the back of someone without boost just costs you speed. Boosting into them knocks them flying (spin-out, 3 coins lost, shoved into a free lane). Landing a jump on someone stomps them. Rivals follow the same rules.
+- **Bumping.** Swiping into a lane where someone is alongside doesn't move you: you bump them. They're slowed (×0.8) and knocked only if you're faster than them. If you're boosting, they spin out instead. Running into the back of someone without boost just costs you speed. Boosting into them knocks them flying (spin-out, 3 coins lost, shoved into a free lane). Landing a jump on someone stomps them. Rivals follow the same rules.
 - **Rivals come for you.** Aggressive ones (`aggro` per track) line up in the lane beside you and attack in three ways:
   - **Side swipe:** a 0.55 s wind-up with red eyes, snapping claws and red chevrons on your lane, then they swerve in.
   - **Charge:** they boost up the next lane and swerve in.
   - **Ram:** they boost into you from behind.
-- **Rear warnings.** Anyone within 28 units behind you shows as a chevron under their lane at the bottom of the screen, flashing red with a "!" and a beep when they're about to hit you.
+
+  A rival hunting you keeps its boost for you rather than burning it on an empty road. When you come up fast behind a rival in the next lane, it may cut across in front of you (a **block**).
+- **A real race.** Rival `skill` ranges sit around your own base speed: 0.93–1.01 on the first track, rising to 1.02–1.11 on the last, where 1.0 is you with no coins. A catch-up rubber band keeps the pack on you: rivals behind you speed up by up to the track's `catchup` (8–12%, full at 80 units back), and ones ahead ease off by at most 4% (at 150 units ahead). Nobody runs away, so there's always someone to fight with.
+- **Rear warnings.** Anyone within 28 units behind you shows as a chevron under their lane at the bottom of the screen, flashing red with a beep when they're about to hit you.
 - **Speed and momentum.**
-  - **Coins:** each one adds 2.5% top speed, up to 10 (Mario Kart style), and a spin-out costs 3.
+  - **Coins:** each one adds 2.5% top speed, up to 10 (Mario Kart style), and a spin-out costs 3. Pick-ups are personal: every racer gets its own copy of each coin and cell, so a rival never takes yours. Yours grow back 8 s after you take them.
   - **Slipstream:** tuck in 1.2–9 units behind someone in your lane for 1 s and you get ×1.3 for 1.6 s.
   - **Boost:** collect cells (max 3); a swipe up gives ×1.5 for 2.2 s with a jolt and smashes through firewalls.
   - **Boost pads:** ×1.4 for 1 s.
   - **Brake:** a swipe down gives ×0.55 for 0.6 s; you keep rolling.
-  - **Momentum on screen:** the speedo (with your coin-raised top speed as a yellow tick), speed lines, an FOV kick and your light-trail ribbon.
+  - **Momentum on screen:** the km/h readout (cyan when boosting, red when braking), speed lines while anything is pushing you (boost, pad, slipstream, landing), an FOV kick, and your light-trail ribbon.
 - **Tricks: the Lane Runner combo system, unchanged.** Driving over a pink ramp launches you into 0.3× slow motion with a combo of 3–5 arrows (← BARREL ROLL, → CORKSCREW, ↑ KICKFLIP, ↓ BOP 360).
   - **PERFECT:** +1 boost, +1 style chain (max x4) and a landing boost.
   - **Partial:** a small landing boost.
   - **Wrong swipe:** COMBO BROKEN, which also resets the chain.
 - **Firewalls** (red hazard blocks, later tracks only) spin you out unless you're boosting. A knocked one slides off the road and fades rather than vanishing.
+- **The HUD is lean.** In a race there are five things on screen:
+  - your position (top left);
+  - a thin progress line with a dot per racer (top centre);
+  - coins (top right);
+  - boost cells (bottom left);
+  - speed (bottom right).
+
+  Everything else shows only when it matters right now: the countdown and GO, the trick combo, rear warnings, and short toasts (TOO EARLY / ROCKET START / STALLED, SLIPSTREAM, getting smashed or smashing someone, your finishing place). The test checks that a normal race frame draws at most five pieces of text.
 - **No pop-in.** Everything is pre-placed along the track and fades in over the last 55 units of the 210-unit draw distance. The far road and grid fade into a horizon fog, and taken coins and cells grow back in 8 s later.
 - **Menus.**
   - **Title:** pinch or tap.
@@ -194,16 +211,16 @@ A TRON-style, cartoony lane racer. You're a round little hero bot on a hoverboar
 
 ## Performance
 
-A busy frame is about 6 ms here in headless Chromium, versus Lane Runner's ~3.5 ms on the same machine. The sky is a pre-rendered 360° panorama per map, and nothing uses `shadowBlur` or per-frame gradients.
+A busy frame is about 5–7 ms here in headless Chromium, versus Lane Runner's ~3.5 ms on the same machine. The sky is a pre-rendered 360° panorama per map, and nothing uses `shadowBlur` or per-frame gradients.
 
-**Lite mode.** If a race averages worse than ~24 fps for 1.5 s, the game switches itself to lite mode: a sparser grid, no fog or stars, no rival trails, and scenery out to 130 units. Force it with `?lite=1`; the title shows "v1 · lite".
+**Lite mode.** If a race averages worse than ~24 fps for 1.5 s, the game switches itself to lite mode: a sparser grid, no fog or stars, lane dashes only 70 units ahead, and scenery out to 130 units. Force it with `?lite=1`; the title shows "v2 · lite".
 
 ## Code map (`ramp-rivals/index.html`)
 
 - **Tuning constants** at the top: speeds, boost, draft, brake, spin-out, knock, ramps, tricks and the camera.
 - **`MAPS`** holds the three maps and their tracks.
   - Track `pieces` are `['S', len]` or `['R'|'L', degrees, radius]`.
-  - Per track: `skill` (the rivals' speed range), `aggro`, `rubber`, `combo` (combo length range) and `barriers`.
+  - Per track: `skill` (the rivals' speed range; you are 1.0), `aggro`, `catchup` (the rubber band), `combo` (combo length range) and `barriers`.
 - **`ROSTER`** is the rivals.
 - **Track.**
   - `geometry()` turns pieces into curvature per unit, blurs it (eased turns) and integrates it into centreline `X/Z/P` arrays, `PRE` units behind the start and `RUNOUT` past the finish.
@@ -211,12 +228,13 @@ A busy frame is about 6 ms here in headless Chromium, versus Lane Runner's ~3.5 
   - Coordinates: `s` = distance along the track, `d` = lanes across (+ is right), `h` = height.
 - **Camera and projection.** `Cam` follows you. `proj(s, d, h)` gives screen `x, y` and `k` (px per unit); its results come from a per-frame pool, so don't keep them across frames. `sampleRoad()` / `rpt()` project road samples cheaply.
 - **Racers** are created by `newRacer()`; `S.racers[0]` is you (`S.P`).
-  - `updateRacer()` does speed targets, lanes, ramps and air, pick-ups, slipstream and the finish.
+  - `updateRacer()` does speed targets, lanes, ramps and air, pick-ups, slipstream and the finish. Items carry a `taken` bitmask (bit `r.idx` per racer; you are bit 0) so each racer collects its own copy once; only yours disappear and respawn.
   - `contacts()` resolves side bumps and rear bumps. `tryLane()` and `bumpHit()` handle the "can't move in, bump instead" rule; `knock()` and `spinOut()` are the two hit sizes.
-  - AI: `think()` does lane choice, hunting, boosts and attacks; `capSpeed()` stops rivals rear-ending anyone unless they're ramming; `attackTick()` runs wind-ups and charges.
+  - AI: `think()` does the rubber band (`r.rb`), lane choice, hunting, blocking, boosts and attacks; `capSpeed()` stops rivals rear-ending anyone unless they're ramming; `attackTick()` runs wind-ups and charges.
   - `S.P.auto` puts you on the same AI: used for the title demo, after you finish, and by the tests, which also play the trick combo.
 - **Drawing.**
-  - Scene: `drawSky` (panorama and stars), `drawGrid`, `drawRoad`, `drawTrail`, `drawWorld` (items, ramps, props and racers sorted far to near), `drawBug` (rivals, with a middle-distance simplification), `drawHero` (you) and `box()`, a culled 3D box with optional taper.
+  - Scene: `drawSky` (panorama and stars), `drawGrid`, `drawRoad`, `drawTrail` (yours only), `drawWorld` (items, ramps, props and racers sorted far to near) and `box()`, a culled 3D box with optional taper.
+  - Racers are low-poly models. `BUG` and `HERO` are built once from convex parts with `addPart()`: icosahedron bodies, a hex wheel that rolls, tetrahedron claws, octahedron eyes, the hex board, and so on. Each face has a colour slot (`SLOT`). `drawModel()` rotates a model (yaw, pitch, roll about its pivot), sorts parts far to near, culls back faces and flat-shades each face with one light fixed relative to the camera (`setLight()`). Glow slots are unlit. `palette()` picks the slot colours per racer, `pose()` turns the race state into yaw, pitch and roll (leaning into lane changes, ramps, spin-outs and your four tricks as real 3D flips), and `drawRacer()` adds the shadow, boost flames and slipstream streaks. Far racers drop fine parts (`lod`) and very far ones are a dot.
   - HUD and screens: `drawRaceHud`, `drawTrickHud` (copied from Lane Runner), `drawRearWarnings`, `drawTitle`, `drawMenu`, `drawResults` and `drawPaused`.
 - **Test hooks.** `window.__rampRivals` is the state and `window.__rampRivalsDebug` exposes the functions.
 
@@ -226,7 +244,7 @@ A busy frame is about 6 ms here in headless Chromium, versus Lane Runner's ~3.5 
 node tests/ramp-rivals.test.js /tmp/shots
 ```
 
-This runs about 55 PASS/FAIL checks:
+This runs 62 PASS/FAIL checks. The page's own frame loop is frozen (`clock.pauseAt`) and the test drives `update()` itself, so results don't depend on machine speed; the few checks that hinge on a dice roll load the dice or seed `Math.random`. The checks cover:
 - menu, countdown, rocket start and stall
 - lanes, brake and boost, cells, coins
 - every bump rule, rival side swipes, hunting and rear warnings
@@ -236,15 +254,24 @@ This runs about 55 PASS/FAIL checks:
 - all 9 tracks (wide turns, clear of themselves, stocked)
 - no pop-in
 - a full autopilot race to the results screen, retry / next / pause
+- v2: racers are 3D models, the HUD is lean, pick-ups are personal, an idle player finishes last and the field stays within 15 s
 - a phone-sized touch run (the stage fits the width, tap, swipe left, swipe up, stray taps ignored)
 - no page errors
 
 It saves screenshots `1-title` … `12-phone` and prints the average render time.
 
+For difficulty, run the sims:
+
+```
+node tests/ramp-rivals.sim.js 30
+```
+
+This races every track 30 times with you on the autopilot (the rivals' own driving, plus tricks swiped at 95% accuracy) and 30 times idle, and prints your average place. At v2 the autopilot averages about 3rd on GRID CITY, 4–5th on SOLAR CANYON and 5–6th on VOID RINGS, and an idle player comes last every time. A human who nails tricks, saves boosts for overtakes and dodges attacks should beat the autopilot.
+
 ## Ideas / next steps
 
-1. **On-device tuning.** Rival `aggro` and `skill`, the rubber band, boost and draft strength, and race length (40–80 s now).
-2. **Performance on the glasses.** Check whether lite mode kicks in; if so, trim the rivals' drawing further or cache their sprites.
+1. **On-device tuning.** Rival `skill`, `aggro` and `catchup`, boost and draft strength, and race length (40–65 s now). Re-run the sims after any change.
+2. **Performance on the glasses.** The 3D models cost more than v1's flat sprites (a busy frame is about 5–7 ms here). Check whether lite mode kicks in; if it does, lower the model LOD distance or drop far racers to dots sooner.
 3. **More maps and tracks.** Unlockable cups, and a time-trial ghost.
 4. **Music.**
 5. **Multiplayer.** The bump rules were designed to be symmetric, so another player could slot in where a rival is.

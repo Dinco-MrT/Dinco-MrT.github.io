@@ -10,8 +10,9 @@ const path = require('path');
   const errs = [];
   p.on('pageerror', (e) => errs.push(String(e)));
   p.on('console', (m) => { if (m.type() === 'error') errs.push(m.text()); });
-  await p.clock.install(); // freeze rAF; the test drives update() itself
+  await p.clock.install();
   await p.goto(URL + '?noreload=1');
+  await p.clock.pauseAt(await p.evaluate(() => Date.now() + 50)); // freeze rAF; the test drives update() itself
 
   const shot = async (n) => { await p.evaluate(() => __rampRivalsDebug.render()); await p.screenshot({ path: `${SP}/${n}.png` }); };
   const run = (sec) => p.evaluate((sec) => { for (let i = 0; i < Math.round(sec * 30); i++) __rampRivalsDebug.update(1 / 30); }, sec);
@@ -34,7 +35,7 @@ const path = require('path');
   // Put a rival next to (ds = 0), ahead of (ds > 0) or behind (ds < 0) you in a lane, at a speed.
   const rival = (i, lane, ds, v, extra = {}) => p.evaluate(([i, lane, ds, v, extra]) => {
     const s = __rampRivals, r = s.racers[i];
-    Object.assign(r, { lane, prevLane: lane, d: lane - 3.5, s: s.P.s + ds, v, skill: v / 26, invuln: 0, spinT: 0, attackCD: 1e9, thinkT: 1e9 }, extra);
+    Object.assign(r, { lane, prevLane: lane, d: lane - 3.5, s: s.P.s + ds, v, skill: v / 26, coins: 0, rb: 1, invuln: 0, spinT: 0, boostT: 0, ramming: false, attack: null, charge: null, attackCD: 1e9, thinkT: 1e9 }, extra);
   }, [i, lane, ds, v, extra]);
 
   // ---- Title, menu, countdown ----
@@ -123,18 +124,26 @@ const path = require('path');
   });
   ok(ram.spin && ram.lane !== 3, 'boosting into the back of a rival knocks them flying into another lane ' + JSON.stringify(ram));
   await fresh(); await rival(1, 3, 3, 18);
-  const rear = await p.evaluate(() => { const s = __rampRivals, D = __rampRivalsDebug, P = s.P, r = s.racers[1]; r.skill = 18 / 26; P.v = 30; for (let i = 0; i < 20; i++) D.update(1 / 30); return { pv: +P.v.toFixed(1), spin: r.spinT > 0, gap: +(r.s - P.s).toFixed(2) }; });
-  ok(!rear.spin && rear.pv < 20 && rear.gap >= 0.99, 'running into the back of someone without boost just costs you speed ' + JSON.stringify(rear));
+  const rear = await p.evaluate(() => { const s = __rampRivals, D = __rampRivalsDebug, P = s.P, r = s.racers[1]; P.v = 30; let lo = 99; for (let i = 0; i < 20; i++) { D.update(1 / 30); lo = Math.min(lo, P.v); } return { pv: +lo.toFixed(1), spin: r.spinT > 0, gap: +(r.s - P.s).toFixed(2) }; });
+  ok(!rear.spin && rear.pv < 18 && rear.gap >= 0.99, 'running into the back of someone without boost just costs you speed ' + JSON.stringify(rear));
 
   // Rivals do it back: a faster rival alongside winds up (claws out, red arrows), then bumps you.
-  await fresh(); await rival(2, 4, 0.1, 24, { aggro: 1, attackCD: 0, thinkT: 0 });
+  await fresh(); await rival(2, 4, 0.1, 24, { aggro: 1, attackCD: 0, thinkT: 0, boosts: 0 });
   await p.evaluate(() => { __rampRivals.raceT = 10; __rampRivals.P.v = 22; __rampRivals.P.skill = 22 / 26; });
-  let atk = await p.evaluate(() => { for (let i = 0; i < 6; i++) __rampRivalsDebug.update(1 / 30); const r = __rampRivals.racers[2]; return { attack: !!r.attack, threats: __rampRivalsDebug.threats() }; });
+  // The wind-up is a dice roll (70% per look for a max-aggro rival); load the dice so the check is deterministic.
+  let atk = await p.evaluate(() => {
+    const R = Math.random; Math.random = () => 0.05;
+    try { for (let i = 0; i < 6; i++) __rampRivalsDebug.update(1 / 30); } finally { Math.random = R; }
+    const r = __rampRivals.racers[2]; return { attack: !!r.attack, threats: __rampRivalsDebug.threats() };
+  });
   ok(atk.attack && atk.threats === 1, 'a faster rival alongside telegraphs a side swipe ' + JSON.stringify(atk));
   await shot('5-attack');
-  await run(0.7);
-  atk = await p.evaluate(() => ({ v: +__rampRivals.P.v.toFixed(1), lane: __rampRivals.P.lane, toast: __rampRivals.toast && __rampRivals.toast.text }));
-  ok(atk.lane === 3 && /BUMPED BY/.test(atk.toast || ''), 'then bumps you: you stay in lane but get knocked ' + JSON.stringify(atk));
+  atk = await p.evaluate(() => {
+    const s = __rampRivals; let lo = 99;
+    for (let i = 0; i < 21; i++) { __rampRivalsDebug.update(1 / 30); lo = Math.min(lo, s.P.v); }
+    return { v: +lo.toFixed(1), lane: s.P.lane, hit: s.stats.hitBy };
+  });
+  ok(atk.lane === 3 && atk.hit === 1 && atk.v < 20, 'then bumps you: you stay in lane but get knocked ' + JSON.stringify(atk));
 
   // An aggressive rival with a boost comes for you from behind (a ram, or a charge up the next lane).
   await fresh(); await rival(5, 4, -5, 26, { aggro: 1, boosts: 1, attackCD: 0, thinkT: 0 });
@@ -255,13 +264,57 @@ const path = require('path');
   await key('Enter'); await run(0.1);
   ok((await S()).mode === 'count', 'pinch again resumes');
 
+  // ---- v2: low-poly 3D racers, a lean HUD, personal pick-ups, rivals that are a real race ----
+  const models = await p.evaluate(() => { const M = __rampRivalsDebug.models, n = (m) => m.parts.reduce((a, q) => a + q.faces.length, 0); return { hero: n(M.HERO), bug: n(M.BUG) }; });
+  ok(models.hero > 50 && models.bug > 40, 'racers are low-poly 3D models ' + JSON.stringify(models));
+  await fresh(); await run(1); await rival(1, 4, 3, 26); await rival(2, 2, 8, 26);
+  const lean = await p.evaluate(() => {
+    const D = __rampRivalsDebug, P = CanvasRenderingContext2D.prototype, f = P.fillText; let texts = 0;
+    P.fillText = function (...a) { texts++; return f.apply(this, a); };
+    D.render(); P.fillText = f;
+    return { faces: D.DBG.faces, texts };
+  });
+  ok(lean.faces > 40, 'the racers on screen are drawn as shaded 3D faces (' + lean.faces + ')');
+  ok(lean.texts <= 5, 'lean HUD: position, coins and speed are the only words on screen mid-race (' + lean.texts + ' text draws)');
+  await shot('10b-lean-hud');
+  await fresh(); await rival(1, 5, 3, 26);
+  const personal = await p.evaluate(() => {
+    const s = __rampRivals, D = __rampRivalsDebug, T = D.track(), P = s.P, r = s.racers[1];
+    const c = { kind: 'coin', s: r.s + 4, d: r.d, h: 0.35, dead: false, back: 0, born: -9, taken: 0 };
+    T.items.push(c); T.items.sort((a, b) => a.s - b.s); r.ii = 0; P.ii = 0; r.coins = 0; P.coins = 0;
+    for (let i = 0; i < 30; i++) D.update(1 / 30);
+    const after = { rival: r.coins, still: !c.dead };
+    P.lane = 5; P.d = 1.5; P.s = c.s - 6; P.ii = 0;
+    for (let i = 0; i < 20; i++) D.update(1 / 30);
+    return { ...after, you: P.coins, gone: c.dead };
+  });
+  ok(personal.rival === 1 && personal.still && personal.you === 1 && personal.gone, 'coins are personal: a rival takes its own and yours is still there ' + JSON.stringify(personal));
+  const race = await p.evaluate(() => {
+    const D = __rampRivalsDebug, s = __rampRivals, out = {}, R = Math.random;
+    // Whole races are full of dice rolls; a seeded generator keeps this check repeatable (sims cover the spread).
+    let a = 20260927;
+    Math.random = () => { a = (a + 0x6d2b79f5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+    for (const idle of [false, true]) {
+      D.startRace(0, 0); s.autoSkill = 0.95; s.P.auto = !idle;
+      let i = 0;
+      while (i++ < 30 * 150 && !(s.mode === 'results' && s.racers.every((r) => r.finished))) D.update(1 / 30);
+      const t = s.racers.map((r) => r.finishT).sort((a, b) => a - b);
+      out[idle ? 'idle' : 'auto'] = { place: s.P.place, spread: +(t[7] - t[0]).toFixed(1) };
+    }
+    Math.random = R;
+    return out;
+  });
+  ok(race.idle.place === 8, 'standing still loses: an idle player finishes last ' + JSON.stringify(race.idle));
+  ok(race.auto.spread < 15, 'the rivals keep it tight: the whole field finishes within 15 s ' + JSON.stringify(race.auto));
+
   // Screens for each map.
   for (const [m, n] of [[0, 'grid-city'], [1, 'solar-canyon'], [2, 'void-rings']]) {
     await p.evaluate((m) => { const D = __rampRivalsDebug, s = __rampRivals; D.startRace(m, 1); s.P.auto = true; for (let i = 0; i < 30 * 14; i++) D.update(1 / 30); }, m);
     await shot('11-' + n);
   }
 
-  // Render cost on a busy frame.
+  // Render cost on a busy frame (let the clock run again so it can be timed).
+  await p.clock.resume();
   const perf = await p.evaluate(() => { const t0 = performance.now(); for (let i = 0; i < 200; i++) __rampRivalsDebug.render(); return (performance.now() - t0) / 200; });
   console.log('avg render ms (desktop):', perf.toFixed(2));
   ok(errs.length === 0, 'no page errors ' + errs.join(' | '));
